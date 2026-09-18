@@ -20,9 +20,9 @@ final class Database
             mkdir(STORAGE_PATH, 0775, true);
         }
 
-        $dsn = getenv('PRSPORT_DB_DSN') ?: 'mysql:host=127.0.0.1;port=3306;dbname=prsport;charset=utf8mb4';
-        $user = getenv('PRSPORT_DB_USER') ?: (str_starts_with($dsn, 'mysql:') ? 'root' : null);
-        $pass = getenv('PRSPORT_DB_PASS') ?: null;
+        $dsn = self::configuredDsn();
+        $user = getenv('PRSPORT_DB_USER') ?: getenv('DB_USERNAME') ?: (str_starts_with($dsn, 'mysql:') ? 'root' : null);
+        $pass = getenv('PRSPORT_DB_PASS') ?: getenv('DB_PASSWORD') ?: null;
 
         self::ensureMysqlDatabase($dsn, $user, $pass);
 
@@ -57,11 +57,28 @@ final class Database
 
     public static function info(): array
     {
-        $dsn = getenv('PRSPORT_DB_DSN') ?: 'mysql:host=127.0.0.1;port=3306;dbname=prsport;charset=utf8mb4';
+        $dsn = self::configuredDsn();
         return [
             'driver' => self::driver(),
             'dsn' => preg_replace('/password=[^;]*/i', 'password=***', $dsn),
         ];
+    }
+
+    private static function configuredDsn(): string
+    {
+        $dsn = getenv('PRSPORT_DB_DSN');
+        if ($dsn) {
+            return $dsn;
+        }
+
+        $host = getenv('DB_HOST');
+        $database = getenv('DB_DATABASE');
+        if ($host && $database) {
+            $port = getenv('DB_PORT') ?: '3306';
+            return "mysql:host={$host};port={$port};dbname={$database};charset=utf8mb4";
+        }
+
+        return 'mysql:host=127.0.0.1;port=3306;dbname=prsport;charset=utf8mb4';
     }
 
     public static function now(): string
@@ -138,10 +155,18 @@ final class Database
             return;
         }
 
-        $pdo = new PDO($serverDsn, $user, $pass, [
-            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-        ]);
-        $pdo->exec("CREATE DATABASE IF NOT EXISTS `{$database}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+        try {
+            $pdo = new PDO($serverDsn, $user, $pass, [
+                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            ]);
+            $pdo->exec("CREATE DATABASE IF NOT EXISTS `{$database}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci");
+        } catch (PDOException $exception) {
+            $code = (int) $exception->getCode();
+            if (in_array($code, [1044, 1045, 42000], true)) {
+                return;
+            }
+            throw $exception;
+        }
     }
 
     private static function ensureMysqlIndexes(PDO $pdo): void

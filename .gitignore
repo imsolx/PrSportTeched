@@ -3,6 +3,7 @@
 /node_modules/
 /storage/*.sqlite
 /storage/*.log
+/storage/*.zip
 /storage/sessions/
 /storage/ui-checks/
 /storage/ui-home-desktop.png
