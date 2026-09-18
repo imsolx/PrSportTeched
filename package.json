@@ -1,0 +1,11 @@
+{
+  "scripts": {
+    "test:ui": "node tools/ui-smoke.cjs"
+  },
+  "dependencies": {
+    "lucide": "^0.468.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0"
+  }
+}

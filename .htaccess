@@ -1,0 +1,15 @@
+Options -Indexes
+
+<IfModule mod_authz_core.c>
+  <FilesMatch "\.(sqlite|sql|lock)$">
+    Require all denied
+  </FilesMatch>
+  <Files ".clasp.json">
+    Require all denied
+  </Files>
+</IfModule>
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteRule ^(app|database|legacy-appscript|legacy-export|node_modules|storage|tools|\.npm-cache)(/|$) - [F,L]
+</IfModule>

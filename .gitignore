@@ -1,0 +1,11 @@
+/.npm-cache/
+/.env
+/node_modules/
+/storage/*.sqlite
+/storage/*.log
+/storage/sessions/
+/storage/ui-checks/
+/storage/ui-home-desktop.png
+/legacy-export/
+/public/uploads/
+/public/reports/
