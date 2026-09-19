@@ -1,0 +1,13 @@
+.git
+.github
+.npm-cache
+node_modules
+storage/*.sqlite
+storage/*.log
+storage/*.zip
+storage/sessions
+storage/ui-checks
+public/uploads
+public/reports
+.env
+

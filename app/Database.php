@@ -55,6 +55,11 @@ final class Database
         return self::driver() === 'sqlite';
     }
 
+    public static function isPgsql(): bool
+    {
+        return self::driver() === 'pgsql';
+    }
+
     public static function info(): array
     {
         $dsn = self::configuredDsn();
@@ -71,14 +76,53 @@ final class Database
             return $dsn;
         }
 
+        $url = getenv('DATABASE_URL') ?: getenv('POSTGRES_URL') ?: getenv('SUPABASE_DB_URL');
+        if ($url) {
+            return self::postgresUrlToDsn($url);
+        }
+
         $host = getenv('DB_HOST');
         $database = getenv('DB_DATABASE');
         if ($host && $database) {
             $port = getenv('DB_PORT') ?: '3306';
+            $driver = getenv('DB_CONNECTION') ?: getenv('DB_DRIVER') ?: (str_contains($host, 'supabase') ? 'pgsql' : 'mysql');
+            if (in_array($driver, ['pgsql', 'postgres', 'postgresql'], true)) {
+                $sslMode = getenv('DB_SSLMODE') ?: 'require';
+                return "pgsql:host={$host};port={$port};dbname={$database};sslmode={$sslMode}";
+            }
             return "mysql:host={$host};port={$port};dbname={$database};charset=utf8mb4";
         }
 
         return 'mysql:host=127.0.0.1;port=3306;dbname=prsport;charset=utf8mb4';
+    }
+
+    private static function postgresUrlToDsn(string $url): string
+    {
+        $parts = parse_url($url);
+        if ($parts === false || empty($parts['host']) || empty($parts['path'])) {
+            return $url;
+        }
+
+        $database = ltrim((string) $parts['path'], '/');
+        if (!getenv('PRSPORT_DB_USER') && !getenv('DB_USERNAME') && isset($parts['user'])) {
+            putenv('DB_USERNAME=' . rawurldecode((string) $parts['user']));
+        }
+        if (!getenv('PRSPORT_DB_PASS') && !getenv('DB_PASSWORD') && isset($parts['pass'])) {
+            putenv('DB_PASSWORD=' . rawurldecode((string) $parts['pass']));
+        }
+
+        $query = [];
+        if (!empty($parts['query'])) {
+            parse_str((string) $parts['query'], $query);
+        }
+
+        return sprintf(
+            'pgsql:host=%s;port=%s;dbname=%s;sslmode=%s',
+            (string) $parts['host'],
+            (string) ($parts['port'] ?? 5432),
+            $database,
+            (string) ($query['sslmode'] ?? getenv('DB_SSLMODE') ?: 'require')
+        );
     }
 
     public static function now(): string
@@ -88,7 +132,8 @@ final class Database
 
     private static function migrate(PDO $pdo): void
     {
-        $suffix = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql' ? '.mysql' : '';
+        $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        $suffix = ['mysql' => '.mysql', 'pgsql' => '.pgsql'][$driver] ?? '';
         $schema = file_get_contents(DATABASE_PATH . DIRECTORY_SEPARATOR . 'schema' . $suffix . '.sql');
         $seed = file_get_contents(DATABASE_PATH . DIRECTORY_SEPARATOR . 'seed' . $suffix . '.sql');
         if ($schema === false || $seed === false) {
@@ -96,21 +141,15 @@ final class Database
         }
         $pdo->exec($schema);
         self::ensurePortableColumns($pdo);
-        if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql') {
+        if ($driver === 'mysql') {
             self::ensureMysqlIndexes($pdo);
         }
         $pdo->exec($seed);
-        if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql') {
-            $pdo->exec(
-                'INSERT IGNORE INTO tournament_sports (tournament_id, sport_id)
-                 SELECT id, sport_id FROM tournaments WHERE sport_id IS NOT NULL'
-            );
-        } else {
-            $pdo->exec(
-                'INSERT OR IGNORE INTO tournament_sports (tournament_id, sport_id)
-                 SELECT id, sport_id FROM tournaments WHERE sport_id IS NOT NULL'
-            );
-        }
+        $pdo->exec(self::insertIgnoreSelectSql(
+            'tournament_sports',
+            '(tournament_id, sport_id)',
+            'SELECT id, sport_id FROM tournaments WHERE sport_id IS NOT NULL'
+        ));
         self::backfillCompetitionModel($pdo);
     }
 
@@ -257,6 +296,15 @@ final class Database
             return (int) $stmt->fetchColumn() > 0;
         }
 
+        if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'pgsql') {
+            $stmt = $pdo->prepare(
+                'SELECT COUNT(*) FROM information_schema.columns
+                 WHERE table_schema = current_schema() AND table_name = :table AND column_name = :column'
+            );
+            $stmt->execute([':table' => $table, ':column' => $column]);
+            return (int) $stmt->fetchColumn() > 0;
+        }
+
         foreach ($pdo->query("PRAGMA table_info({$table})") as $row) {
             if ((string) $row['name'] === $column) {
                 return true;
@@ -265,14 +313,28 @@ final class Database
         return false;
     }
 
+    private static function insertIgnoreSelectSql(string $table, string $columns, string $select): string
+    {
+        $driver = self::$pdo?->getAttribute(PDO::ATTR_DRIVER_NAME) ?: 'sqlite';
+        if ($driver === 'mysql') {
+            return "INSERT IGNORE INTO {$table} {$columns} {$select}";
+        }
+        if ($driver === 'pgsql') {
+            return "INSERT INTO {$table} {$columns} {$select} ON CONFLICT DO NOTHING";
+        }
+        return "INSERT OR IGNORE INTO {$table} {$columns} {$select}";
+    }
+
     private static function backfillCompetitionModel(PDO $pdo): void
     {
         $now = self::now();
-        $insert = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME) === 'mysql' ? 'INSERT IGNORE' : 'INSERT OR IGNORE';
+        $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        $insert = $driver === 'mysql' ? 'INSERT IGNORE' : ($driver === 'pgsql' ? 'INSERT' : 'INSERT OR IGNORE');
+        $onConflict = $driver === 'pgsql' ? ' ON CONFLICT DO NOTHING' : '';
         $pdo->exec("{$insert} INTO universities (id, code, name, logo_url, is_active, created_at, updated_at)
-                    VALUES (1, 'RMUTT', 'มหาวิทยาลัยเทคโนโลยีราชมงคลธัญบุรี', 'public/assets/logo.png', 1, '{$now}', '{$now}')");
+                    VALUES (1, 'RMUTT', 'มหาวิทยาลัยเทคโนโลยีราชมงคลธัญบุรี', 'public/assets/logo.png', 1, '{$now}', '{$now}'){$onConflict}");
         $pdo->exec("{$insert} INTO faculties (id, university_id, code, name, logo_url, is_active, created_at, updated_at)
-                    VALUES (1, 1, '102', 'คณะครุศาสตร์อุตสาหกรรม', 'public/assets/logo.png', 1, '{$now}', '{$now}')");
+                    VALUES (1, 1, '102', 'คณะครุศาสตร์อุตสาหกรรม', 'public/assets/logo.png', 1, '{$now}', '{$now}'){$onConflict}");
         $pdo->exec('UPDATE departments SET faculty_id = 1 WHERE faculty_id IS NULL');
         $pdo->exec('UPDATE teams SET sport_id = (SELECT sport_id FROM tournaments WHERE tournaments.id = teams.tournament_id) WHERE sport_id IS NULL');
         $pdo->exec('UPDATE matches SET sport_id = COALESCE((SELECT sport_id FROM teams WHERE teams.id = matches.team1_id), (SELECT sport_id FROM tournaments WHERE tournaments.id = matches.tournament_id)) WHERE sport_id IS NULL');

@@ -295,7 +295,7 @@ final class AppService
             'faculty_code' => '102',
             'current_academic_year' => '69',
         ];
-        foreach (self::fetchAll('SELECT `key`, value FROM settings') as $row) {
+        foreach (self::fetchAll('SELECT key, value FROM settings') as $row) {
             $settings[(string) $row['key']] = $row['value'];
         }
         return $settings;
@@ -4149,6 +4149,9 @@ table{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0 12px}th,td
         if (Database::isMysql()) {
             return "GROUP_CONCAT({$expression} SEPARATOR '{$separator}')";
         }
+        if (Database::isPgsql()) {
+            return "STRING_AGG({$expression}::text, '{$separator}')";
+        }
         return "group_concat({$expression}, '{$separator}')";
     }
 
@@ -4172,6 +4175,15 @@ table{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0 12px}th,td
         if (Database::isMysql()) {
             $rows = Database::pdo()->query("SHOW COLUMNS FROM {$table}")->fetchAll();
             return $cache[$table] = array_map(fn(array $row): string => (string) $row['Field'], $rows);
+        }
+        if (Database::isPgsql()) {
+            $stmt = Database::pdo()->prepare(
+                'SELECT column_name FROM information_schema.columns
+                 WHERE table_schema = current_schema() AND table_name = :table
+                 ORDER BY ordinal_position'
+            );
+            $stmt->execute([':table' => $table]);
+            return $cache[$table] = array_map(fn(array $row): string => (string) $row['column_name'], $stmt->fetchAll());
         }
         $rows = Database::pdo()->query("PRAGMA table_info({$table})")->fetchAll();
         return $cache[$table] = array_map(fn(array $row): string => (string) $row['name'], $rows);

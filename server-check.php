@@ -4,6 +4,7 @@ $items = array(
     'PHP version' => PHP_VERSION,
     '.env exists' => is_file($envPath) ? 'yes' : 'no',
     'pdo_mysql' => extension_loaded('pdo_mysql') ? 'yes' : 'no',
+    'pdo_pgsql' => extension_loaded('pdo_pgsql') ? 'yes' : 'no',
     'storage exists' => is_dir(__DIR__ . '/storage') ? 'yes' : 'no',
     'storage writable' => is_writable(__DIR__ . '/storage') ? 'yes' : 'no',
 );

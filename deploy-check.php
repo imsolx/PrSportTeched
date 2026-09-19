@@ -40,6 +40,7 @@ function env_value(array $env, string $key): ?string
 $env = read_env_values($envPath);
 $checks[] = check_row('.env file', is_file($envPath), is_file($envPath) ? 'พบไฟล์ .env แล้ว' : 'ยังไม่พบไฟล์ .env ที่ htdocs/.env');
 $checks[] = check_row('PDO MySQL', extension_loaded('pdo_mysql'), extension_loaded('pdo_mysql') ? 'PHP เปิด pdo_mysql แล้ว' : 'PHP ยังไม่มี pdo_mysql');
+$checks[] = check_row('PDO PostgreSQL', extension_loaded('pdo_pgsql'), extension_loaded('pdo_pgsql') ? 'PHP เปิด pdo_pgsql แล้ว' : 'PHP ยังไม่มี pdo_pgsql');
 $checks[] = check_row('app files', is_file($root . '/app/Database.php') && is_file($root . '/public/index.php'), 'ตรวจไฟล์ app/Database.php และ public/index.php');
 
 $storage = $root . DIRECTORY_SEPARATOR . 'storage';
@@ -53,11 +54,36 @@ $user = env_value($env, 'PRSPORT_DB_USER');
 $pass = env_value($env, 'PRSPORT_DB_PASS');
 
 if (!$dsn) {
+    $databaseUrl = env_value($env, 'DATABASE_URL') ?: env_value($env, 'POSTGRES_URL') ?: env_value($env, 'SUPABASE_DB_URL');
+    if ($databaseUrl) {
+        $parts = parse_url($databaseUrl);
+        if ($parts !== false && !empty($parts['host']) && !empty($parts['path'])) {
+            $query = [];
+            if (!empty($parts['query'])) {
+                parse_str((string) $parts['query'], $query);
+            }
+            $dsn = sprintf(
+                'pgsql:host=%s;port=%s;dbname=%s;sslmode=%s',
+                (string) $parts['host'],
+                (string) ($parts['port'] ?? 5432),
+                ltrim((string) $parts['path'], '/'),
+                (string) ($query['sslmode'] ?? env_value($env, 'DB_SSLMODE') ?: 'require')
+            );
+            $user = isset($parts['user']) ? rawurldecode((string) $parts['user']) : $user;
+            $pass = isset($parts['pass']) ? rawurldecode((string) $parts['pass']) : $pass;
+        }
+    }
+}
+
+if (!$dsn) {
     $host = env_value($env, 'DB_HOST');
     $database = env_value($env, 'DB_DATABASE');
     $port = env_value($env, 'DB_PORT') ?: '3306';
     if ($host && $database) {
-        $dsn = "mysql:host={$host};port={$port};dbname={$database};charset=utf8mb4";
+        $driver = env_value($env, 'DB_CONNECTION') ?: env_value($env, 'DB_DRIVER') ?: (str_contains($host, 'supabase') ? 'pgsql' : 'mysql');
+        $dsn = in_array($driver, ['pgsql', 'postgres', 'postgresql'], true)
+            ? "pgsql:host={$host};port={$port};dbname={$database};sslmode=" . (env_value($env, 'DB_SSLMODE') ?: 'require')
+            : "mysql:host={$host};port={$port};dbname={$database};charset=utf8mb4";
         $user = env_value($env, 'DB_USERNAME');
         $pass = env_value($env, 'DB_PASSWORD');
     }
@@ -71,7 +97,11 @@ if ($dsn && $user) {
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         ]);
-        $tableCount = (int) $pdo->query('SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()')->fetchColumn();
+        $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
+        $countSql = $driver === 'pgsql'
+            ? "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = current_schema()"
+            : 'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE()';
+        $tableCount = (int) $pdo->query($countSql)->fetchColumn();
         $dbOk = true;
         $dbDetail = "เชื่อมต่อฐานข้อมูลได้ พบ {$tableCount} tables";
     } catch (Throwable $exception) {
