@@ -295,7 +295,8 @@ final class AppService
             'faculty_code' => '102',
             'current_academic_year' => '69',
         ];
-        foreach (self::fetchAll('SELECT key, value FROM settings') as $row) {
+        $settingsKey = Database::isMysql() ? '`key`' : 'key';
+        foreach (self::fetchAll("SELECT {$settingsKey}, value FROM settings") as $row) {
             $settings[(string) $row['key']] = $row['value'];
         }
         return $settings;
