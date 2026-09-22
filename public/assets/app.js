@@ -52,6 +52,11 @@ function bindNavigation() {
 function bindAuth() {
   $('#login-toggle').addEventListener('click', () => $('#login-dialog').showModal());
   $('#login-cancel').addEventListener('click', () => $('#login-dialog').close());
+  $('#profile-toggle').addEventListener('click', openProfileDialog);
+  $('#profile-cancel').addEventListener('click', () => {
+    $('#profile-form').reset();
+    $('#profile-dialog').close();
+  });
   $('#logout-button').addEventListener('click', async () => {
     await runTask($('#logout-button'), async () => {
     const result = await request('auth.logout');
@@ -75,6 +80,19 @@ function bindAuth() {
     await loadAdminRefs();
     showView('dashboard');
     toast('เข้าสู่ระบบแล้ว');
+    });
+  });
+  $('#profile-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    await runForm(form, async () => {
+      const result = await request('auth.profile', formData(form));
+      app.user = result.user;
+      app.csrf = result.csrf;
+      form.reset();
+      $('#profile-dialog').close();
+      updateSessionUi();
+      toast('บันทึกบัญชีแล้ว');
     });
   });
 }
@@ -355,6 +373,7 @@ function updateSessionUi() {
   document.body.classList.toggle('admin-mode', Boolean(loggedIn));
   $('#current-user-label').textContent = loggedIn ? (app.user.name || app.user.email) : 'ผู้เยี่ยมชม';
   $('#login-toggle').hidden = loggedIn;
+  $('#profile-toggle').hidden = !loggedIn;
   $('#logout-button').hidden = !loggedIn;
 
   const roleViews = {
@@ -371,6 +390,16 @@ function updateSessionUi() {
     button.hidden = !allowed.includes(button.dataset.viewButton);
   });
   updateShortcuts();
+  refreshIcons($('.session-box'));
+}
+
+function openProfileDialog() {
+  const form = $('#profile-form');
+  form.reset();
+  form.elements.email.value = app.user?.email || '';
+  form.elements.name.value = app.user?.name || '';
+  $('#profile-dialog').showModal();
+  refreshIcons($('#profile-dialog'));
 }
 
 async function showView(name) {
@@ -1010,6 +1039,7 @@ async function loadUsersAdmin() {
     ['role_label', 'บทบาท'],
     ['department_name', 'สาขา'],
     ['sport_names', 'กีฬา'],
+    ['password_status', 'รหัสผ่าน'],
     ['active_label', 'สถานะ'],
     ['actions', 'จัดการ', (_, row) => rowActions([
       ['แก้ไข', () => fillForm('#user-form', row)],
@@ -1768,6 +1798,11 @@ async function deleteRow(action, id, reload) {
 
 function fillForm(selector, row) {
   openEditor(selector.replace('#', ''), row);
+  if (selector === '#user-form') {
+    const form = $(selector);
+    if (form.elements.password) form.elements.password.value = '';
+    if (form.elements.password_confirm) form.elements.password_confirm.value = '';
+  }
 }
 
 function formData(form) {

@@ -21,6 +21,8 @@ final class AppService
                 return Auth::login(self::legacyArg($payload));
             case 'auth.logout':
                 return Auth::logout();
+            case 'auth.profile':
+                return self::updateProfile($payload);
             case 'invites.preview':
                 return self::invitePreview((string) ($payload['token'] ?? self::legacyArg($payload, 0, '')));
             case 'invites.accept':
@@ -1500,6 +1502,49 @@ final class AppService
             'roles' => Auth::roleOptions(),
             'departments' => self::activeDepartments(),
             'sports' => self::fetchAll('SELECT * FROM sports WHERE is_active = 1 ORDER BY name ASC'),
+        ];
+    }
+
+    public static function updateProfile(array $payload): array
+    {
+        $currentUser = Auth::requireRole([
+            Auth::ROLE_SUPER_ADMIN,
+            Auth::ROLE_ADMIN,
+            Auth::ROLE_SPORT_HEAD,
+            Auth::ROLE_REGISTRATION_OFFICER,
+            Auth::ROLE_RESULT_OFFICER,
+            Auth::ROLE_PUBLIC_RELATIONS,
+            Auth::ROLE_VIEWER,
+        ]);
+        $id = (string) ($currentUser['id'] ?? '');
+        $existing = self::findById('users', $id);
+        $name = trim((string) ($payload['name'] ?? ''));
+        if ($name === '') {
+            throw new InvalidArgumentException('กรุณากรอกชื่อผู้ใช้งาน');
+        }
+
+        $patch = ['name' => $name];
+        $currentPassword = (string) ($payload['current_password'] ?? '');
+        $newPassword = (string) ($payload['new_password'] ?? '');
+        $confirm = (string) ($payload['new_password_confirm'] ?? '');
+        if ($newPassword !== '' || $confirm !== '' || $currentPassword !== '') {
+            if (empty($existing['password_hash']) || !password_verify($currentPassword, (string) $existing['password_hash'])) {
+                throw new RuntimeException('รหัสผ่านเดิมไม่ถูกต้อง');
+            }
+            if ($newPassword !== $confirm) {
+                throw new InvalidArgumentException('รหัสผ่านใหม่และการยืนยันรหัสผ่านไม่ตรงกัน');
+            }
+            Auth::validatePasswordStrength($newPassword);
+            $patch['password_hash'] = password_hash($newPassword, PASSWORD_DEFAULT);
+            $patch['password_salt'] = null;
+            $patch['password_updated_at'] = Database::now();
+        }
+
+        $row = self::updateRow('users', $id, $patch);
+        self::audit('update_profile', 'users', $id, self::sanitizeUserAudit($row));
+        return [
+            'user' => Auth::sanitize($row),
+            'csrf' => Auth::csrfToken(),
         ];
     }
 
@@ -3374,6 +3419,10 @@ table{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0 12px}th,td
         ];
         $password = (string) ($payload['password'] ?? '');
         if ($password !== '') {
+            $confirm = (string) ($payload['password_confirm'] ?? $password);
+            if ($password !== $confirm) {
+                throw new InvalidArgumentException('รหัสผ่านและการยืนยันรหัสผ่านไม่ตรงกัน');
+            }
             Auth::validatePasswordStrength($password);
             $record['password_hash'] = password_hash($password, PASSWORD_DEFAULT);
             $record['password_salt'] = null;

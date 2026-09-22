@@ -48,6 +48,7 @@ $csrf = Auth::csrfToken();
     </nav>
     <div class="session-box">
       <span id="current-user-label">ผู้เยี่ยมชม</span>
+      <button class="btn small icon-button" id="profile-toggle" type="button" title="บัญชีของฉัน" aria-label="บัญชีของฉัน" hidden><i data-lucide="user-cog"></i></button>
       <button class="btn small" id="login-toggle" type="button">เข้าสู่ระบบ</button>
       <button class="btn small ghost" id="logout-button" type="button" hidden>ออกจากระบบ</button>
     </div>
@@ -465,7 +466,8 @@ $csrf = Auth::csrfToken();
           <input type="hidden" name="id">
           <label>อีเมล <input type="email" name="email" required></label>
           <label>ชื่อ <input name="name"></label>
-          <label>รหัสผ่าน <input type="password" name="password" autocomplete="new-password"></label>
+          <label>รหัสผ่านใหม่ <input type="password" name="password" autocomplete="new-password" minlength="8"></label>
+          <label>ยืนยันรหัสผ่านใหม่ <input type="password" name="password_confirm" autocomplete="new-password" minlength="8"></label>
           <label>บทบาท <select name="role" id="user-role-select" required></select></label>
           <label>สาขา <select name="department_code" class="department-select optional"><option value="">ไม่จำกัด</option></select></label>
           <label>รหัสกีฬาที่รับผิดชอบ <input name="sport_ids" placeholder="1,2"></label>
@@ -738,6 +740,21 @@ $csrf = Auth::csrfToken();
       <label>อีเมล <input name="email" type="email" autocomplete="username" placeholder="name@example.com" required></label>
       <label>รหัสผ่าน <input name="password" type="password" autocomplete="current-password" required></label>
       <div class="actions"><button class="btn" value="cancel" type="button" id="login-cancel">ยกเลิก</button><button class="btn primary" type="submit">เข้าสู่ระบบ</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="profile-dialog" aria-labelledby="profile-title">
+    <form method="dialog" class="dialog-card" id="profile-form">
+      <div class="login-mark"><i data-lucide="user-cog"></i></div>
+      <p class="eyebrow">TECHED SPORT</p>
+      <h2 id="profile-title">บัญชีของฉัน</h2>
+      <label>อีเมล <input name="email" type="email" autocomplete="username" readonly></label>
+      <label>ชื่อ <input name="name" autocomplete="name" required></label>
+      <label>รหัสผ่านเดิม <input name="current_password" type="password" autocomplete="current-password"></label>
+      <label>รหัสผ่านใหม่ <input name="new_password" type="password" autocomplete="new-password" minlength="8"></label>
+      <label>ยืนยันรหัสผ่านใหม่ <input name="new_password_confirm" type="password" autocomplete="new-password" minlength="8"></label>
+      <p class="muted">เว้นช่องรหัสผ่านไว้ หากต้องการแก้ไขเฉพาะชื่อบัญชี</p>
+      <div class="actions"><button class="btn" value="cancel" type="button" id="profile-cancel">ยกเลิก</button><button class="btn primary" type="submit">บันทึกบัญชี</button></div>
     </form>
   </dialog>
 
