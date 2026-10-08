@@ -101,7 +101,7 @@ function initBannerStudio() {
   $('#banner-use-button').addEventListener('click', () => runTask($('#banner-use-button'), useBannerAsCover));
   refreshIcons($('#banner-dialog'));
 
-  const assetBaseUrl = document.querySelector('script[src$="banner-studio.js"]')?.src || window.location.href;
+  const assetBaseUrl = document.querySelector('script[src*="banner-studio.js"]')?.src || window.location.href;
   Promise.all([
     loadBannerImage(new URL('court.jpg', assetBaseUrl).href),
     loadBannerImage(new URL('logo.png', assetBaseUrl).href),

@@ -65,6 +65,20 @@ async function main() {
       await expect(page.locator(`#view-${name}`)).toBeVisible();
       await expect(page.locator('#page-progress')).toBeHidden();
     };
+    const selectStudentScope = async () => {
+      if (!await page.locator('#student-scope-faculty').inputValue()) {
+        await page.locator('#student-scope-faculty').selectOption({ index: 1 });
+      }
+      await expect(page.locator('#student-scope-department')).toBeEnabled();
+      if (!await page.locator('#student-scope-department').inputValue()) {
+        await page.locator('#student-scope-department').selectOption({ index: 1 });
+      }
+      await expect(page.locator('#student-scope-sport')).toBeEnabled();
+      if (!await page.locator('#student-scope-sport').inputValue()) {
+        await page.locator('#student-scope-sport').selectOption({ index: 1 });
+      }
+      await expect(page.locator('#student-scope')).toHaveClass(/complete/);
+    };
     const noOverflow = async () => expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
     await go('sports');
     await expect(page.locator('#sports-table [aria-label="ลบ"] svg').first()).toBeVisible();
@@ -128,18 +142,31 @@ async function main() {
     await capture({ path: path.join(artifacts, 'sports-desktop.png'), fullPage: true });
 
     const sections = {
-      sports: ['sport-rule-form', 'organization-form'],
-      students: ['student-form'],
-      matches: ['tournament-form', 'team-form', 'member-form', 'match-form', 'result-form'],
-      news: ['news-form'], tasks: ['task-form'], users: ['user-form'],
+      sports: [{ id: 'organization-form' }],
+      matches: [
+        { id: 'tournament-form', step: 1 }, { id: 'sport-rule-form', step: 3 }, { id: 'student-form', step: 5 },
+        { id: 'team-form', step: 6 }, { id: 'member-form', step: 7 }, { id: 'match-form', step: 9 }, { id: 'result-form', step: 10 },
+      ],
+      news: [{ id: 'news-form' }], tasks: [{ id: 'task-form' }], users: [{ id: 'user-form' }],
     };
     for (const [view, forms] of Object.entries(sections)) {
       await go(view);
       await noOverflow();
-      for (const id of forms) {
+      for (const item of forms) {
+        const { id, step } = item;
+        if (step) await page.evaluate(step => setWorkflowStep(step, false), step);
         // The public command opens each editor; assertions inspect the resulting dialog.
-        const heading = page.locator(`#view-${view} .data-heading`);
+        const heading = step
+          ? page.locator(`#view-${view} [data-workflow-step~="${step}"] .data-heading`)
+          : page.locator(`#view-${view} .data-heading`);
         const label = await page.evaluate(id => workspace.forms[id][0], id);
+        if (id === 'student-form') {
+          await expect(heading.getByRole('button', { name: `เพิ่ม${label}`, exact: true })).toBeDisabled();
+          await expect(page.locator('#student-scope-department')).toBeDisabled();
+          await selectStudentScope();
+          await expect(heading.getByRole('button', { name: `เพิ่ม${label}`, exact: true })).toBeEnabled();
+          await capture({ path: path.join(artifacts, 'student-scope-desktop.png'), fullPage: true });
+        }
         await heading.getByRole('button', { name: id === 'result-form' ? 'บันทึกผล' : `เพิ่ม${label}`, exact: true }).click();
         await expect(page.locator(`#${id}-dialog`)).toBeVisible();
         await page.keyboard.press('Escape');
@@ -167,13 +194,36 @@ async function main() {
     await page.locator('#tasks-table tbody tr', { hasText: 'UI Test Task' }).getByRole('button').last().click();
     await page.locator('.confirm-dialog').getByRole('button').last().click();
     await expect.poll(async () => page.evaluate(async () => (await request('tasks.list')).some(row => row.title === 'UI Test Task'))).toBe(false);
-    await go('students');
+    await page.evaluate(() => showView('matches'));
+    await expect(page.locator('#view-matches')).toBeVisible();
+    await expect(page.locator('#page-progress')).toBeHidden();
+    await page.evaluate(() => setWorkflowStep(5, false));
+    await selectStudentScope();
     await page.getByRole('button', { name: 'นำเข้า CSV', exact: true }).click();
     await expect(page.locator('.import-dialog[open]')).toBeVisible();
     await page.keyboard.press('Escape');
     await go('reports');
     await noOverflow();
     await expect(page.locator('#ai-provider-status')).toBeVisible();
+
+    await page.evaluate(() => showView('matches'));
+    await expect(page.locator('#view-matches')).toBeVisible();
+    await page.evaluate(() => setWorkflowStep(5, false));
+    await selectStudentScope();
+    await page.locator('[data-workflow-step~="5"] .data-heading').getByRole('button', { name: 'เพิ่มนักศึกษา', exact: true }).click();
+    await page.locator('#student-form [name=student_code]').fill('UI-ATHLETE-01');
+    await page.locator('#student-form [name=first_name]').fill('กิตติพงษ์');
+    await page.locator('#student-form [name=last_name]').fill('ทดสอบระบบ');
+    await expect(page.locator('#student-form [name=department_code]')).toHaveValue(await page.locator('#student-scope-department').inputValue());
+    await page.locator('#student-photo-file').setInputFiles(path.join(root, 'public', 'assets', 'logo.png'));
+    await expect(page.locator('#student-photo-preview img')).toBeVisible();
+    await page.locator('#student-form [type=submit]').click();
+    await expect(page.locator('#student-form-dialog')).toBeHidden();
+    await expect(page.locator('#students-table .student-table-photo')).toBeVisible();
+    await expect(page.locator('#students-table tbody')).not.toContainText('<img');
+    const profilePhotoUrl = await page.evaluate(async () => (await request('students.list', { q: 'UI-ATHLETE-01' }))[0]?.photo_url || '');
+    expect(profilePhotoUrl).toContain('/uploads/profiles/profile-');
+    generatedUploads.push(path.join(root, 'public', 'uploads', 'profiles', path.basename(new URL(profilePhotoUrl, base).pathname)));
 
     const fixture = await page.evaluate(async () => {
       const sport = (await request('sports.list'))[0];
@@ -186,9 +236,40 @@ async function main() {
       const tournament = await request('tournaments.save', { name: 'UI Tournament', sport_id: sport.id, format: 'knockout', status: 'registration' });
       const teams = [];
       for (const name of ['UI Team A', 'UI Team B']) teams.push(await request('teams.save', { name, tournament_id: tournament.id, department_code: department.code }));
-      return { tournament, teams };
+      const athlete = (await request('students.list', { q: 'UI-ATHLETE-01' }))[0];
+      await request('teamMembers.save', { team_id: teams[0].id, student_id: athlete.id, role: 'captain', shirt_number: '10', field_position: 'กองหน้า' });
+      return { tournament, teams, multi };
     });
-    await go('matches');
+    await page.evaluate(() => showView('public-athletes'));
+    await expect(page.locator('#view-public-athletes')).toBeVisible();
+    await expect(page.locator('#athlete-department-filter')).toBeDisabled();
+    await page.locator('#athlete-faculty-filter').selectOption({ index: 1 });
+    await expect(page.locator('#athlete-department-filter')).toBeEnabled();
+    await page.locator('#athlete-department-filter').selectOption({ index: 1 });
+    await expect(page.locator('#athlete-sport-filter')).toBeEnabled();
+    await page.locator('#athlete-sport-filter').selectOption({ index: 1 });
+    await expect(page.locator('#athlete-results')).toBeVisible();
+    await expect(page.locator('[data-athlete-flow-step="4"]')).toHaveClass(/active/);
+    await expect(page.locator('.athlete-profile-photo')).toBeVisible();
+    await expect(page.locator('.athlete-profile-photo')).toHaveAttribute('src', /uploads\/profiles\/profile-/);
+    await capture({ path: path.join(artifacts, 'public-athletes-flow-desktop.png'), fullPage: true });
+    await page.evaluate(() => showView('matches'));
+    await expect(page.locator('#view-matches')).toBeVisible();
+    await expect(page.locator('#page-progress')).toBeHidden();
+    await expect.poll(() => page.evaluate(() => Boolean(document.querySelector('link[href*="workspace.css?v="]')))).toBe(true);
+    await expect.poll(() => page.locator('#workflow-steps').evaluate(element => getComputedStyle(element).display)).toBe('flex');
+    await page.locator('#workflow-tournament-select').selectOption(String(fixture.multi.id));
+    await expect(page.locator('#workflow-tournament-name')).toContainText('Multi Sport UI Tournament');
+    await page.evaluate(() => setWorkflowStep(2, false));
+    await expect(page.locator('#workflow-step-count')).toHaveText('ขั้นที่ 2 จาก 11');
+    await expect(page.locator('#workflow-step-title')).toHaveText('เลือกกีฬาที่จัด');
+    await page.locator('#workflow-next-button').click();
+    await expect(page.locator('#workflow-step-title')).toHaveText('ตั้งกติกาแต่ละกีฬา');
+    await expect(page.locator('[data-workflow-step-button="3"]')).toHaveAttribute('aria-current', 'step');
+    await page.locator('#workflow-previous-button').click();
+    await expect(page.locator('#workflow-step-title')).toHaveText('เลือกกีฬาที่จัด');
+    await capture({ path: path.join(artifacts, 'tournament-workflow-desktop.png'), fullPage: true });
+    await page.evaluate(() => setWorkflowStep(1, false));
     const multiTournamentRow = page.locator('#tournaments-table tbody tr', { hasText: 'Multi Sport UI Tournament' });
     await multiTournamentRow.getByRole('button', { name: 'แก้ไข', exact: true }).click();
     await capture({ path: path.join(artifacts, 'tournament-modal-desktop.png') });
@@ -198,8 +279,18 @@ async function main() {
     await expect(page.locator('#tournament-sports-options .sport-choice:not([hidden])')).not.toHaveCount(0);
     await page.locator('#tournament-sport-type').selectOption('');
     await page.locator('#tournament-form input[name="sport_ids[]"]').nth(1).check();
+    await expect(page.locator('#tournament-form input[name="sport_ids[]"]:checked')).toHaveCount(2);
+    const tournamentRequest = page.waitForRequest(request => request.url().includes('action=tournaments.save'));
+    const tournamentResponse = page.waitForResponse(response => response.url().includes('action=tournaments.save'));
     await page.locator('#tournament-form [type=submit]').click();
-    await expect(page.locator('#tournaments-table tbody tr', { hasText: 'Multi Sport UI Tournament' })).toContainText(' · ');
+    const tournamentPayload = (await tournamentRequest).postDataJSON();
+    const tournamentResult = await (await tournamentResponse).json();
+    if (new Set(tournamentPayload.sport_ids || []).size !== 2) throw new Error(`tournament form payload lost selected sports: ${JSON.stringify(tournamentPayload)}`);
+    if (tournamentResult.data?.sport_ids?.length !== 2) throw new Error(`tournament API did not retain selected sports: payload=${JSON.stringify(tournamentPayload)} response=${JSON.stringify(tournamentResult)}`);
+    await expect.poll(async () => page.evaluate(async () => (await request('tournaments.list')).find(row => row.name === 'Multi Sport UI Tournament')?.sport_ids?.length)).toBe(2);
+    await page.locator('#workflow-tournament-select').selectOption(String(fixture.tournament.id));
+    await expect(page.locator('#workflow-tournament-name')).toContainText('UI Tournament');
+    await page.evaluate(() => setWorkflowStep(9, false));
     await page.getByRole('button', { name: 'เพิ่มแมตช์', exact: true }).click();
     await page.locator('#match-tournament-select').selectOption(String(fixture.tournament.id));
     await page.locator('#match-team1-select').selectOption(String(fixture.teams[0].id));
@@ -207,12 +298,14 @@ async function main() {
     await page.locator('#match-form [name=scheduled_at]').fill('2026-09-15T10:30');
     await page.locator('#match-form [type=submit]').click();
     await expect(page.locator('#match-form-dialog')).toBeHidden();
-    await expect(page.locator('#matches-table tbody tr')).toHaveCount(1);
+    await expect.poll(async () => page.evaluate(async id => (await request('matches.list', { tournament_id: id })).length, fixture.tournament.id)).toBe(1);
+    await expect(page.locator('#matches-table tbody')).toContainText('UI Team A');
     await page.locator('#matches-table').getByRole('button', { name: 'แก้ไข', exact: true }).click();
     await expect(page.locator('#match-team1-select')).toHaveValue(String(fixture.teams[0].id));
     await expect(page.locator('#match-team2-select')).toHaveValue(String(fixture.teams[1].id));
     await expect(page.locator('#match-form [name=scheduled_at]')).toHaveValue('2026-09-15T10:30');
     await page.locator('#match-form-dialog .modal-head .icon-button').click();
+    await expect.poll(async () => await page.locator('.confirm-dialog').isVisible() || await page.locator('#match-form-dialog').isHidden()).toBe(true);
     if (await page.locator('.confirm-dialog').isVisible()) {
       await page.locator('.confirm-dialog').getByRole('button', { name: 'ยกเลิกการแก้ไข', exact: true }).click();
     }
@@ -277,6 +370,24 @@ async function main() {
       expect(await modal.evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
       await capture({ path: path.join(artifacts, `sport-modal-${width}.png`) });
       await page.keyboard.press('Escape');
+      if (width === 390) {
+        await go('matches');
+        await page.evaluate(() => setWorkflowStep(2, false));
+        await noOverflow();
+        await capture({ path: path.join(artifacts, 'tournament-workflow-mobile.png'), fullPage: true });
+        await page.evaluate(() => setWorkflowStep(5, false));
+        await selectStudentScope();
+        await noOverflow();
+        await capture({ path: path.join(artifacts, 'student-scope-mobile.png'), fullPage: true });
+        await page.evaluate(() => showView('public-athletes'));
+        await page.locator('#athlete-faculty-filter').selectOption({ index: 1 });
+        await page.locator('#athlete-department-filter').selectOption({ index: 1 });
+        await page.locator('#athlete-sport-filter').selectOption({ index: 1 });
+        await noOverflow();
+        await capture({ path: path.join(artifacts, 'public-athletes-flow-mobile.png'), fullPage: true });
+        await page.evaluate(() => showView('matches'));
+        await expect(page.locator('#view-matches')).toBeVisible();
+      }
       await go('news');
       await page.getByRole('button', { name: 'เพิ่มข่าวประชาสัมพันธ์', exact: true }).click();
       expect(await page.locator('#news-form-dialog').evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);

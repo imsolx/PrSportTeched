@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS students (
   is_eligible TINYINT(1) NOT NULL DEFAULT 1,
   card_raw_data TEXT,
   phone VARCHAR(50),
+  photo_url TEXT,
   created_at VARCHAR(30),
   updated_at VARCHAR(30),
   CONSTRAINT fk_students_department FOREIGN KEY (department_code) REFERENCES departments(code)
@@ -104,6 +105,18 @@ CREATE TABLE IF NOT EXISTS tournament_sports (
   PRIMARY KEY (tournament_id, sport_id),
   CONSTRAINT fk_tournament_sports_tournament FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
   CONSTRAINT fk_tournament_sports_sport FOREIGN KEY (sport_id) REFERENCES sports(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS tournament_departments (
+  id INT PRIMARY KEY,
+  tournament_id INT NOT NULL,
+  sport_id INT NOT NULL,
+  department_code VARCHAR(20) NOT NULL,
+  created_at VARCHAR(30),
+  UNIQUE KEY uq_tournament_department (tournament_id, sport_id, department_code),
+  CONSTRAINT fk_td_tournament FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
+  CONSTRAINT fk_td_sport FOREIGN KEY (sport_id) REFERENCES sports(id) ON DELETE CASCADE,
+  CONSTRAINT fk_td_department FOREIGN KEY (department_code) REFERENCES departments(code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS teams (
@@ -251,6 +264,21 @@ CREATE TABLE IF NOT EXISTS sport_rule_versions (
   updated_at VARCHAR(30),
   UNIQUE KEY uq_sport_rule_version (sport_id, version_number),
   CONSTRAINT fk_rule_versions_sport FOREIGN KEY (sport_id) REFERENCES sports(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS tournament_sport_settings (
+  id INT PRIMARY KEY,
+  tournament_id INT NOT NULL,
+  sport_id INT NOT NULL,
+  rule_version_id INT,
+  status VARCHAR(30) NOT NULL DEFAULT 'pending',
+  notes TEXT,
+  created_at VARCHAR(30),
+  updated_at VARCHAR(30),
+  UNIQUE KEY uq_tournament_sport_settings (tournament_id, sport_id),
+  CONSTRAINT fk_tss_tournament FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
+  CONSTRAINT fk_tss_sport FOREIGN KEY (sport_id) REFERENCES sports(id) ON DELETE CASCADE,
+  CONSTRAINT fk_tss_rule FOREIGN KEY (rule_version_id) REFERENCES sport_rule_versions(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS match_periods (

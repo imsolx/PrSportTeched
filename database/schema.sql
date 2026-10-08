@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS students (
   is_eligible INTEGER NOT NULL DEFAULT 1,
   card_raw_data TEXT,
   phone TEXT,
+  photo_url TEXT,
   created_at TEXT,
   updated_at TEXT,
   FOREIGN KEY (department_code) REFERENCES departments(code)
@@ -106,6 +107,18 @@ CREATE TABLE IF NOT EXISTS tournament_sports (
   PRIMARY KEY (tournament_id, sport_id),
   FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
   FOREIGN KEY (sport_id) REFERENCES sports(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS tournament_departments (
+  id INTEGER PRIMARY KEY,
+  tournament_id INTEGER NOT NULL,
+  sport_id INTEGER NOT NULL,
+  department_code TEXT NOT NULL,
+  created_at TEXT,
+  UNIQUE (tournament_id, sport_id, department_code),
+  FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
+  FOREIGN KEY (sport_id) REFERENCES sports(id) ON DELETE CASCADE,
+  FOREIGN KEY (department_code) REFERENCES departments(code)
 );
 
 CREATE TABLE IF NOT EXISTS teams (
@@ -253,6 +266,21 @@ CREATE TABLE IF NOT EXISTS sport_rule_versions (
   updated_at TEXT,
   UNIQUE (sport_id, version_number),
   FOREIGN KEY (sport_id) REFERENCES sports(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS tournament_sport_settings (
+  id INTEGER PRIMARY KEY,
+  tournament_id INTEGER NOT NULL,
+  sport_id INTEGER NOT NULL,
+  rule_version_id INTEGER,
+  status TEXT NOT NULL DEFAULT 'pending',
+  notes TEXT,
+  created_at TEXT,
+  updated_at TEXT,
+  UNIQUE (tournament_id, sport_id),
+  FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE,
+  FOREIGN KEY (sport_id) REFERENCES sports(id) ON DELETE CASCADE,
+  FOREIGN KEY (rule_version_id) REFERENCES sport_rule_versions(id)
 );
 
 CREATE TABLE IF NOT EXISTS match_periods (
@@ -419,6 +447,8 @@ CREATE TABLE IF NOT EXISTS report_attachments (
 CREATE INDEX IF NOT EXISTS idx_students_department ON students(department_code);
 CREATE INDEX IF NOT EXISTS idx_tournaments_sport ON tournaments(sport_id);
 CREATE INDEX IF NOT EXISTS idx_tournament_sports_sport ON tournament_sports(sport_id);
+CREATE INDEX IF NOT EXISTS idx_tournament_sport_settings_rule ON tournament_sport_settings(rule_version_id);
+CREATE INDEX IF NOT EXISTS idx_tournament_departments_lookup ON tournament_departments(tournament_id, sport_id);
 CREATE INDEX IF NOT EXISTS idx_teams_tournament ON teams(tournament_id);
 CREATE INDEX IF NOT EXISTS idx_team_members_team ON team_members(team_id);
 CREATE INDEX IF NOT EXISTS idx_team_members_student ON team_members(student_id);

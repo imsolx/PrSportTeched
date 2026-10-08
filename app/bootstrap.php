@@ -47,6 +47,14 @@ function app_url(string $path = ''): string
     return $base . '/' . $path;
 }
 
+function versioned_asset_url(string $path): string
+{
+    $normalized = ltrim(str_replace('\\', '/', $path), '/');
+    $file = ROOT_PATH . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $normalized);
+    $version = is_file($file) ? (string) filemtime($file) : '1';
+    return app_url($normalized) . '?v=' . rawurlencode($version);
+}
+
 function load_env_file(string $path): void
 {
     if (!is_file($path) || !is_readable($path)) {

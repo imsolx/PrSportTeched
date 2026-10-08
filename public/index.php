@@ -16,31 +16,31 @@ $csrf = Auth::csrfToken();
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Prompt:wght@400;500;600;700;800&display=swap">
-  <link rel="stylesheet" href="<?= htmlspecialchars(app_url('public/assets/app.css'), ENT_QUOTES, 'UTF-8') ?>">
-  <link rel="stylesheet" href="<?= htmlspecialchars(app_url('public/assets/workspace.css'), ENT_QUOTES, 'UTF-8') ?>">
+  <link rel="stylesheet" href="<?= htmlspecialchars(versioned_asset_url('public/assets/app.css'), ENT_QUOTES, 'UTF-8') ?>">
+  <link rel="stylesheet" href="<?= htmlspecialchars(versioned_asset_url('public/assets/workspace.css'), ENT_QUOTES, 'UTF-8') ?>">
 </head>
 <body>
   <header class="topbar">
     <button class="btn icon-button" id="menu-toggle" type="button" aria-label="เปิดเมนู" aria-expanded="false" aria-controls="main-navigation"><i data-lucide="menu"></i></button>
     <button class="brand" type="button" data-view-button="public">
-      <img src="<?= htmlspecialchars(app_url('public/assets/logo.png'), ENT_QUOTES, 'UTF-8') ?>" alt="RMUTT Education">
+      <img src="<?= htmlspecialchars(versioned_asset_url('public/assets/logo.png'), ENT_QUOTES, 'UTF-8') ?>" alt="RMUTT Education">
       <span>
         <strong>TECHED SPORT</strong>
         <small>ครุศาสตร์อุตสาหกรรม มทร.ธัญบุรี</small>
       </span>
     </button>
     <nav class="tabs" id="main-navigation" aria-label="เมนูหลัก">
-      <button class="tab active" data-view-button="public">หน้าแรก</button>
+      <a class="tab active" href="./" data-view-button="public">ดูหน้าเว็บไซต์</a>
       <button class="tab" data-view-button="public-sports">กีฬา</button>
       <button class="tab" data-view-button="public-athletes">นักกีฬา</button>
       <button class="tab" data-view-button="public-schedule">ตารางแข่งขัน</button>
       <button class="tab" data-view-button="public-results">ผลการแข่งขัน</button>
       <button class="tab" data-view-button="public-news">ข่าวสาร</button>
       <button class="tab admin-link" data-view-button="dashboard" hidden>แดชบอร์ด</button>
-      <button class="tab admin-link" data-view-button="sports" hidden>ข้อมูลหลัก</button>
+      <button class="tab admin-link" data-view-button="sports" hidden>ตั้งค่าข้อมูลหลัก</button>
       <button class="tab admin-link" data-view-button="students" hidden>นักศึกษา</button>
       <button class="tab admin-link" data-view-button="teams" hidden>ทีม</button>
-      <button class="tab admin-link" data-view-button="matches" hidden>การแข่งขัน</button>
+      <button class="tab admin-link" data-view-button="matches" hidden>จัดการทัวร์นาเมนต์</button>
       <button class="tab admin-link" data-view-button="news" hidden>ข่าวสาร</button>
       <button class="tab admin-link" data-view-button="tasks" hidden>แผนงาน</button>
       <button class="tab admin-link" data-view-button="users" hidden>ผู้ดูแลระบบ</button>
@@ -48,6 +48,7 @@ $csrf = Auth::csrfToken();
     </nav>
     <div class="session-box">
       <span id="current-user-label">ผู้เยี่ยมชม</span>
+      <a class="btn small ghost frontend-link" id="frontend-view-button" href="./" data-view-button="public" title="ดูหน้าเว็บไซต์" aria-label="ดูหน้าเว็บไซต์" hidden><i data-lucide="monitor"></i><span>ดูหน้าเว็บไซต์</span></a>
       <button class="btn small icon-button" id="profile-toggle" type="button" title="บัญชีของฉัน" aria-label="บัญชีของฉัน" hidden><i data-lucide="user-cog"></i></button>
       <button class="btn small" id="login-toggle" type="button">เข้าสู่ระบบ</button>
       <button class="btn small ghost" id="logout-button" type="button" hidden>ออกจากระบบ</button>
@@ -104,13 +105,33 @@ $csrf = Auth::csrfToken();
       <div class="table-wrap" id="public-sports-table"></div>
     </section>
 
-    <section class="view content-band" id="view-public-athletes" hidden>
-      <div class="section-head">
-        <h2>แผนผังนักกีฬา</h2>
-        <select id="athlete-sport-filter"></select>
+    <section class="view content-band athlete-page" id="view-public-athletes" hidden>
+      <header class="athlete-page-head">
+        <div>
+          <h2>นักกีฬาของเรา</h2>
+          <p>ค้นหารายชื่อนักกีฬาตามหน่วยงานและชนิดกีฬา</p>
+        </div>
+        <span id="athlete-total-count">0 นักกีฬา</span>
+      </header>
+      <nav class="athlete-flow" aria-label="ขั้นตอนค้นหานักกีฬา">
+        <div class="active" data-athlete-flow-step="1"><span>1</span><strong>คณะ</strong><small>เลือกหน่วยงานหลัก</small></div>
+        <div data-athlete-flow-step="2"><span>2</span><strong>สาขา</strong><small>เลือกสาขาวิชา</small></div>
+        <div data-athlete-flow-step="3"><span>3</span><strong>กีฬา</strong><small>เลือกชนิดกีฬา</small></div>
+        <div data-athlete-flow-step="4"><span>4</span><strong>ผู้เล่น</strong><small>ดูรายชื่อนักกีฬา</small></div>
+      </nav>
+      <div class="athlete-filter-panel">
+        <label><span>1. คณะ</span><select id="athlete-faculty-filter" aria-label="เลือกคณะ"></select></label>
+        <label><span>2. สาขา</span><select id="athlete-department-filter" aria-label="เลือกสาขา" disabled></select></label>
+        <label><span>3. กีฬา</span><select id="athlete-sport-filter" aria-label="เลือกกีฬา" disabled></select></label>
       </div>
-      <input class="search-input" id="athlete-team-filter" placeholder="ค้นหาชื่อทีม / สาขา">
-      <div class="athlete-board-list" id="athlete-board-list"></div>
+      <div class="athlete-flow-notice" id="athlete-flow-notice"><i data-lucide="mouse-pointer-click"></i><span>เริ่มจากเลือกคณะ เพื่อดูสาขาที่มีนักกีฬาเข้าร่วม</span></div>
+      <section class="athlete-results" id="athlete-results" hidden>
+        <div class="athlete-results-head">
+          <div><span>รายชื่อนักกีฬา</span><h3 id="athlete-results-title">ผู้เล่นทั้งหมด</h3></div>
+          <label class="athlete-search"><i data-lucide="search"></i><input id="athlete-team-filter" type="search" placeholder="ค้นหาชื่อผู้เล่น รหัสนักศึกษา หรือทีม" aria-label="ค้นหานักกีฬา"></label>
+        </div>
+        <div class="athlete-board-list" id="athlete-board-list"></div>
+      </section>
     </section>
 
     <section class="view content-band" id="view-public-schedule" hidden>
@@ -244,10 +265,32 @@ $csrf = Auth::csrfToken();
             <label>ปีเข้า <input name="entry_year"></label>
             <label>เพศ <select name="gender"><option value="open">ไม่ระบุ</option><option value="male">ชาย</option><option value="female">หญิง</option></select></label>
           </div>
+          <div class="student-photo-field">
+            <div class="student-photo-preview" id="student-photo-preview"><i data-lucide="user-round"></i></div>
+            <div>
+              <label>รูปโปรไฟล์ <input type="file" id="student-photo-file" accept="image/jpeg,image/png,image/webp"></label>
+              <label>ลิงก์รูปโปรไฟล์ <input name="photo_url" id="student-photo-url" placeholder="อัปโหลดรูป หรือวาง URL รูปภาพ"></label>
+              <small>รองรับ JPG, PNG หรือ WEBP ขนาดไม่เกิน 5MB</small>
+            </div>
+          </div>
           <label>โทรศัพท์ <input name="phone"></label>
           <div class="actions"><button class="btn primary" type="submit">บันทึก</button><button class="btn ghost reset-form" type="button">ล้างฟอร์ม</button></div>
         </form>
-        <div class="card wide"><h2>นักศึกษาล่าสุด</h2><div class="table-wrap" id="students-table"></div></div>
+        <div class="card wide">
+          <h2>จัดการนักศึกษา</h2>
+          <div class="student-scope" id="student-scope">
+            <div class="student-scope-heading">
+              <div><span>ขอบเขตข้อมูล</span><strong>เลือกตามลำดับก่อนเพิ่ม นำเข้า หรือแก้ไข</strong></div>
+              <p id="student-scope-status" aria-live="polite">เริ่มจากเลือกคณะ/หน่วยงาน</p>
+            </div>
+            <div class="student-scope-fields">
+              <label><span><b>1</b> คณะ/หน่วยงาน</span><select id="student-scope-faculty" aria-label="เลือกคณะหรือหน่วยงาน"></select></label>
+              <label><span><b>2</b> สาขา</span><select id="student-scope-department" aria-label="เลือกสาขา" disabled></select></label>
+              <label><span><b>3</b> กีฬา</span><select id="student-scope-sport" aria-label="เลือกกีฬา" disabled></select></label>
+            </div>
+          </div>
+          <div class="table-wrap" id="students-table"></div>
+        </div>
         <div class="card full">
           <h2>นำเข้า CSV นักศึกษา</h2>
           <textarea class="csv-input" id="students-csv" placeholder="student_code,prefix,first_name,last_name,department_code,entry_year,gender,phone"></textarea>
@@ -295,7 +338,88 @@ $csrf = Auth::csrfToken();
     </section>
 
     <section class="view app-panel" id="view-matches" hidden>
-      <div class="grid">
+      <div class="section-head tournament-workspace-heading">
+        <div>
+          <p class="section-kicker">TECHED SPORT / ศูนย์จัดการข้อมูลภายใน</p>
+          <h2>จัดการทัวร์นาเมนต์</h2>
+          <p class="muted">ไม่มีระบบสมัคร — ข้อมูลทั้งหมดนำเข้าและจัดการโดยเจ้าหน้าที่</p>
+        </div>
+        <div class="tournament-workspace-controls">
+          <label>ทัวร์นาเมนต์
+            <select id="workflow-tournament-select" aria-label="เลือกทัวร์นาเมนต์"></select>
+          </label>
+          <button class="btn" id="workflow-settings-button" type="button"><i data-lucide="settings-2"></i><span>ตั้งค่าขั้นนี้</span></button>
+        </div>
+      </div>
+      <div class="tournament-context" id="tournament-context">
+        <div><strong id="workflow-tournament-name">ยังไม่มีทัวร์นาเมนต์</strong><span id="workflow-tournament-meta">สร้างทัวร์นาเมนต์เพื่อเริ่มจัดการข้อมูล</span></div>
+        <span class="workflow-status" id="workflow-tournament-status">ฉบับร่าง</span>
+      </div>
+      <div class="workflow-layout">
+        <nav class="workflow-steps" id="workflow-steps" aria-label="ลำดับการจัดการทัวร์นาเมนต์">
+          <div class="workflow-progress-summary">
+            <span id="workflow-progress-label">ความคืบหน้า 0 จาก 11 ขั้น</span>
+            <div class="workflow-progress-track" aria-hidden="true"><span id="workflow-progress-bar"></span></div>
+          </div>
+          <button type="button" data-workflow-step-button="1"><span>1</span><strong>ข้อมูลทัวร์นาเมนต์</strong><small>ชื่อ ปี และสถานะ</small></button>
+          <button type="button" data-workflow-step-button="2"><span>2</span><strong>เลือกกีฬา</strong><small>กำหนดรายการกีฬา</small></button>
+          <button type="button" data-workflow-step-button="3"><span>3</span><strong>กติกาแต่ละกีฬา</strong><small>เลือกชุดกติกาที่ใช้</small></button>
+          <button type="button" data-workflow-step-button="4"><span>4</span><strong>สาขาที่เข้าร่วม</strong><small>ระบุสาขาแยกตามกีฬา</small></button>
+          <button type="button" data-workflow-step-button="5"><span>5</span><strong>นำเข้านักศึกษา</strong><small>เตรียมรายชื่อนักศึกษา</small></button>
+          <button type="button" data-workflow-step-button="6"><span>6</span><strong>สร้างทีม</strong><small>แยกทีมตามกีฬาและสาขา</small></button>
+          <button type="button" data-workflow-step-button="7"><span>7</span><strong>จัดสมาชิกทีม</strong><small>เพิ่มนักกีฬาเข้าทีม</small></button>
+          <button type="button" data-workflow-step-button="8"><span>8</span><strong>ตรวจความพร้อม</strong><small>เช็กข้อมูลก่อนแข่งขัน</small></button>
+          <button type="button" data-workflow-step-button="9"><span>9</span><strong>ตารางแข่งขัน</strong><small>สร้างวันเวลาและคู่แข่ง</small></button>
+          <button type="button" data-workflow-step-button="10"><span>10</span><strong>บันทึกผล</strong><small>คะแนนและเหตุการณ์แข่งขัน</small></button>
+          <button type="button" data-workflow-step-button="11"><span>11</span><strong>ข่าวและรายงาน</strong><small>สรุปและเผยแพร่ผล</small></button>
+        </nav>
+        <div class="workflow-content">
+          <header class="workflow-stage-head">
+            <div>
+              <span class="workflow-step-count" id="workflow-step-count">ขั้นที่ 1 จาก 11</span>
+              <h3 id="workflow-step-title">ข้อมูลทัวร์นาเมนต์</h3>
+              <p id="workflow-step-description">สร้างหรือแก้ไขข้อมูลหลักของทัวร์นาเมนต์ก่อนเริ่มขั้นตอนถัดไป</p>
+            </div>
+            <span class="workflow-step-state" id="workflow-step-state">กำลังทำ</span>
+          </header>
+          <div class="workflow-notice" id="workflow-notice"><i data-lucide="info"></i><span>เลือกทัวร์นาเมนต์ แล้วดำเนินการตามลำดับทีละขั้น</span></div>
+          <div class="grid">
+        <section class="data-section workflow-stage" id="workflow-sports-section" data-workflow-step="2" hidden>
+          <div class="data-heading"><div><h2>กีฬาที่จัดในทัวร์นาเมนต์</h2><p class="muted">เลือกกีฬาได้หลายรายการจากการตั้งค่าทัวร์นาเมนต์</p></div><button class="btn" id="workflow-edit-sports" type="button"><i data-lucide="settings-2"></i><span>ตั้งค่ากีฬา</span></button></div>
+          <div class="table-wrap" id="workflow-sports-table"></div>
+        </section>
+        <form class="card form-card" id="tournament-sport-setting-form">
+          <h2>กติกาที่ใช้ในทัวร์นาเมนต์</h2>
+          <input type="hidden" name="tournament_id">
+          <input type="hidden" name="sport_id">
+          <label>กีฬา <input name="sport_name" readonly></label>
+          <label>ชุดกติกาที่ใช้ <select name="rule_version_id" id="workflow-rule-version" required></select></label>
+          <label>สถานะการตั้งค่า <select name="status"><option value="pending">ยังตั้งค่าไม่ครบ</option><option value="ready">พร้อมใช้งาน</option><option value="locked">ล็อกการตั้งค่า</option></select></label>
+          <label>หมายเหตุ <textarea name="notes" placeholder="รายละเอียดเฉพาะของกีฬานี้ในทัวร์นาเมนต์"></textarea></label>
+          <div class="actions"><button class="btn primary" type="submit">บันทึกการตั้งค่า</button></div>
+        </form>
+        <section class="data-section workflow-stage" id="workflow-departments-section" data-workflow-step="4" hidden>
+          <div class="data-heading"><div><h2>สาขาที่เข้าร่วมแต่ละกีฬา</h2><p class="muted">เจ้าหน้าที่เป็นผู้กำหนดรายการภายใน ไม่มีขั้นตอนสมัครหรือตอบรับ</p></div></div>
+          <div class="workflow-setting-layout">
+            <div>
+              <label>กีฬา <select id="workflow-department-sport"></select></label>
+              <div class="department-checklist" id="workflow-department-options"></div>
+              <div class="actions"><button class="btn primary" id="workflow-save-departments" type="button"><i data-lucide="check"></i><span>บันทึกสาขาที่เข้าร่วม</span></button></div>
+            </div>
+            <aside class="workflow-summary" id="workflow-department-summary"></aside>
+          </div>
+        </section>
+        <section class="data-section workflow-stage" id="workflow-readiness-section" data-workflow-step="8" hidden>
+          <div class="data-heading"><div><h2>ตรวจสอบความพร้อม</h2><p class="muted">ตรวจข้อมูลที่ต้องมี ก่อนจัดสายและสร้างตารางแข่งขัน</p></div></div>
+          <div id="workflow-readiness"></div>
+        </section>
+        <section class="data-section workflow-stage" id="workflow-publish-section" data-workflow-step="11" hidden>
+          <div class="data-heading"><div><h2>ข่าวและรายงาน</h2><p class="muted">ใช้ข้อมูลการแข่งขันที่ยืนยันแล้วสำหรับประชาสัมพันธ์และจัดทำรายงาน</p></div></div>
+          <div class="workflow-final-actions">
+            <button class="workflow-action" type="button" data-workflow-view="news"><i data-lucide="newspaper"></i><strong>จัดทำข่าวประชาสัมพันธ์</strong><span>ร่างข่าว สร้างแบนเนอร์ และเผยแพร่</span></button>
+            <button class="workflow-action" type="button" data-workflow-view="reports"><i data-lucide="file-chart-column"></i><strong>จัดทำรายงาน</strong><span>สรุปผล KPI งบประมาณ และเอกสารประกอบ</span></button>
+          </div>
+        </section>
         <form class="card form-card" id="tournament-form">
           <h2>รายการแข่ง</h2>
           <input type="hidden" name="id">
@@ -325,7 +449,7 @@ $csrf = Auth::csrfToken();
           </div>
           <div class="form-row">
             <label>รูปแบบ <select name="format"><option value="knockout">knockout</option><option value="round_robin">round_robin</option><option value="group">group</option><option value="group_knockout">group_knockout</option></select></label>
-            <label>สถานะ <select name="status"><option value="draft">draft</option><option value="registration">registration</option><option value="closed">closed</option><option value="in_progress">in_progress</option><option value="completed">completed</option><option value="cancelled">cancelled</option></select></label>
+            <label>สถานะ <select name="status"><option value="draft">ฉบับร่าง</option><option value="data_entry">กำลังเตรียมข้อมูล</option><option value="ready">พร้อมแข่งขัน</option><option value="in_progress">กำลังแข่งขัน</option><option value="completed">จบการแข่งขัน</option><option value="cancelled">ยกเลิก</option></select></label>
           </div>
           <div class="actions"><button class="btn primary" type="submit">บันทึกรายการ</button><button class="btn ghost reset-form" type="button">ล้างฟอร์ม</button></div>
         </form>
@@ -379,6 +503,13 @@ $csrf = Auth::csrfToken();
           </div>
         </section>
         <section class="data-section full"><div class="data-heading"><h2>ตารางคะแนน</h2><select id="standings-tournament-filter" aria-label="เลือกรายการแข่งขัน"></select></div><div class="table-wrap" id="standings-table"></div></section>
+          </div>
+          <footer class="workflow-navigation" aria-label="ไปยังขั้นตอนก่อนหน้าหรือถัดไป">
+            <button class="btn ghost" id="workflow-previous-button" type="button"><i data-lucide="arrow-left"></i><span>ย้อนกลับ</span></button>
+            <span id="workflow-navigation-hint">บันทึกข้อมูลในขั้นนี้ให้เรียบร้อย แล้วไปขั้นถัดไป</span>
+            <button class="btn primary" id="workflow-next-button" type="button"><span>ขั้นถัดไป</span><i data-lucide="arrow-right"></i></button>
+          </footer>
+        </div>
       </div>
     </section>
 
@@ -504,7 +635,7 @@ $csrf = Auth::csrfToken();
           <div class="form-row">
             <label>หมวดงาน <select name="category">
               <option value="general">ทั่วไป</option>
-              <option value="registration">รับสมัคร</option>
+              <option value="registration">นำเข้าข้อมูล</option>
               <option value="competition">การแข่งขัน</option>
               <option value="content">ข่าวสาร</option>
               <option value="report">รายงาน</option>
@@ -821,9 +952,9 @@ $csrf = Auth::csrfToken();
       user: <?= json_encode($user, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>
     };
   </script>
-  <script src="<?= htmlspecialchars(app_url('public/assets/lucide.min.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
-  <script src="<?= htmlspecialchars(app_url('public/assets/workspace.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
-  <script src="<?= htmlspecialchars(app_url('public/assets/banner-studio.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
-  <script src="<?= htmlspecialchars(app_url('public/assets/app.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
+  <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/lucide.min.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
+  <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/workspace.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
+  <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/banner-studio.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
+  <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/app.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
 </body>
 </html>

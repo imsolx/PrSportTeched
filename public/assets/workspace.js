@@ -7,6 +7,7 @@ const workspace = {
     'team-form': ['ทีม', 'teams-table', 'users'],
     'member-form': ['สมาชิกทีม', 'members-table', 'user-plus'],
     'tournament-form': ['รายการแข่งขัน', 'tournaments-table', 'medal'],
+    'tournament-sport-setting-form': ['กติกาในทัวร์นาเมนต์', 'workflow-sports-table', 'settings-2'],
     'match-form': ['แมตช์', 'matches-table', 'calendar-days'],
     'result-form': ['ผลการแข่งขัน', 'matches-table', 'clipboard-check'],
     'news-form': ['ข่าวประชาสัมพันธ์', 'news-table', 'newspaper'],
@@ -16,7 +17,7 @@ const workspace = {
   labels: {
     team: 'ทีม', individual: 'บุคคล', open: 'ทั่วไป', male: 'ชาย', female: 'หญิง', mixed: 'ผสม',
     submitted: 'รออนุมัติ', approved: 'อนุมัติแล้ว', rejected: 'ไม่อนุมัติ', locked: 'ล็อกแล้ว',
-    draft: 'ฉบับร่าง', registration: 'เปิดรับสมัคร', closed: 'ปิดรับสมัคร', in_progress: 'กำลังแข่งขัน',
+    draft: 'ฉบับร่าง', data_entry: 'กำลังเตรียมข้อมูล', ready: 'พร้อมแข่งขัน', registration: 'กำลังเตรียมข้อมูล', closed: 'ปิดแก้ไขข้อมูล', in_progress: 'กำลังแข่งขัน',
     completed: 'จบการแข่งขัน', cancelled: 'ยกเลิก', scheduled: 'รอแข่งขัน', live: 'กำลังแข่งขัน',
     postponed: 'เลื่อนการแข่งขัน', published: 'เผยแพร่แล้ว', archived: 'เก็บเข้าคลัง',
     todo: 'ต้องทำ', doing: 'กำลังทำ', blocked: 'ติดปัญหา', done: 'เสร็จแล้ว',
@@ -109,8 +110,17 @@ function initWorkspace() {
       head.append($('h2', section));
       section.prepend(head);
     }
-    const createLabel = id === 'result-form' ? 'บันทึกผล' : `เพิ่ม${label}`;
-    head.append(command(createLabel, id === 'result-form' ? glyph : 'plus', () => openEditor(id), id === 'result-form' ? '' : 'primary'));
+    if (id !== 'tournament-sport-setting-form') {
+      const createLabel = id === 'result-form' ? 'บันทึกผล' : `เพิ่ม${label}`;
+      const createButton = command(
+        createLabel,
+        id === 'result-form' ? glyph : 'plus',
+        () => id === 'student-form' ? openScopedStudentEditor() : openEditor(id),
+        id === 'result-form' ? '' : 'primary'
+      );
+      if (id === 'student-form') createButton.dataset.studentScopeAction = 'create';
+      head.append(createButton);
+    }
   });
 
   ['students', 'members'].forEach(kind => {
@@ -125,19 +135,48 @@ function initWorkspace() {
     dialog.append(panel);
     document.body.append(dialog);
     bindDialogDismiss(dialog, () => dialog.close());
-    $(`#${kind}-table`).closest('.data-section').querySelector('.data-heading').append(
-      command('นำเข้า CSV', 'upload', () => dialog.showModal())
-    );
+    const importButton = command('นำเข้า CSV', 'upload', () => kind === 'students' ? openStudentImport() : dialog.showModal());
+    if (kind === 'students') importButton.dataset.studentScopeAction = 'import';
+    $(`#${kind}-table`).closest('.data-section').querySelector('.data-heading').append(importButton);
   });
 
   const competitionGrid = $('#view-matches .grid');
   const tournamentSection = $('#tournaments-table')?.closest('.data-section');
+  const sportRuleSection = $('#sport-rules-table')?.closest('.data-section');
+  const studentSection = $('#students-table')?.closest('.data-section');
   const teamSection = $('#teams-table')?.closest('.data-section');
   const memberSection = $('#members-table')?.closest('.data-section');
-  if (competitionGrid && tournamentSection && teamSection && memberSection) {
-    tournamentSection.after(teamSection, memberSection);
+  const matchSection = $('#matches-table')?.closest('.data-section');
+  const matchCenterSection = $('#match-center-panel');
+  const standingsSection = $('#standings-table')?.closest('.data-section');
+  if (competitionGrid && tournamentSection && sportRuleSection && studentSection && teamSection && memberSection && matchSection) {
+    tournamentSection.dataset.workflowStep = '1';
+    sportRuleSection.dataset.workflowStep = '3';
+    studentSection.dataset.workflowStep = '5';
+    teamSection.dataset.workflowStep = '6';
+    memberSection.dataset.workflowStep = '7';
+    matchSection.dataset.workflowStep = '9 10';
+    if (matchCenterSection) matchCenterSection.dataset.workflowStep = '10';
+    if (standingsSection) standingsSection.dataset.workflowStep = '10';
+    const orderedSections = [
+      tournamentSection,
+      $('#workflow-sports-section'),
+      sportRuleSection,
+      $('#workflow-departments-section'),
+      studentSection,
+      teamSection,
+      memberSection,
+      $('#workflow-readiness-section'),
+      matchSection,
+      matchCenterSection,
+      standingsSection,
+      $('#workflow-publish-section'),
+    ].filter(Boolean);
+    competitionGrid.append(...orderedSections);
     const teamTab = $('.tab[data-view-button="teams"]');
     if (teamTab) teamTab.hidden = true;
+    const studentTab = $('.tab[data-view-button="students"]');
+    if (studentTab) studentTab.hidden = true;
   }
 
   $$('.app-panel').forEach(panel => {
@@ -222,6 +261,7 @@ function openEditor(id, row = null) {
     if (!field || field.type === 'file' || field.type === 'password') return;
     if (field.type === 'checkbox') field.checked = Boolean(Number(value));
     else if (field.type === 'datetime-local') field.value = String(value || '').replace(' ', 'T').slice(0, 16);
+    else if (id === 'tournament-form' && key === 'status') field.value = ({ registration: 'data_entry', closed: 'ready' }[value] || value || 'draft');
     else field.value = value ?? '';
   });
   if (id === 'tournament-form' && typeof updateTournamentSportsSummary === 'function') updateTournamentSportsSummary();
@@ -235,6 +275,7 @@ function openEditor(id, row = null) {
     form.elements.winner_team_id.value = row?.winner_team_id || '';
   }
   if (id === 'organization-form' && typeof syncOrganizationFields === 'function') syncOrganizationFields();
+  if (id === 'student-form' && typeof syncStudentPhotoPreview === 'function') syncStudentPhotoPreview(form.elements.photo_url?.value || '');
   if (id === 'news-form' && typeof prepareNewsEditor === 'function') prepareNewsEditor(row);
   const label = workspace.forms[id][0];
   $(`#${id}-title`).textContent = id === 'result-form' ? `บันทึก${label}` : `${row ? 'แก้ไข' : 'เพิ่ม'}${label}`;
@@ -358,9 +399,10 @@ function renderDataTable(selector, columns, rows) {
     state.page = Math.min(state.page, pages);
     const start = (state.page - 1) * state.size;
     const visible = filtered.slice(start, start + state.size);
-    viewport.innerHTML = visible.length ? `<table><thead><tr>${columns.map(([, label]) => `<th scope="col">${escapeHtml(label)}</th>`).join('')}</tr></thead><tbody>${visible.map(row => `<tr>${columns.map(([key, , formatter]) => {
+    viewport.innerHTML = visible.length ? `<table><thead><tr>${columns.map(([, label]) => `<th scope="col">${escapeHtml(label)}</th>`).join('')}</tr></thead><tbody>${visible.map(row => `<tr>${columns.map(([key, , formatter, options]) => {
       let value = formatter ? formatter(row[key], row) : row[key];
       if (key === 'actions') return `<td class="action-cell">${value}</td>`;
+      if (options?.html) return `<td>${value}</td>`;
       value = workspace.labels[value] || value;
       const status = ['status', 'status_label', 'active_label'].includes(key);
       return `<td>${status ? `<span class="status-badge ${['approved', 'published', 'completed'].includes(row.status) ? 'success' : ['rejected', 'cancelled'].includes(row.status) ? 'danger' : ''}">${escapeHtml(value ?? '-')}</span>` : escapeHtml(value ?? '-')}</td>`;

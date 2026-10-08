@@ -214,6 +214,8 @@ final class Database
             ['students', 'idx_students_department', 'department_code'],
             ['tournaments', 'idx_tournaments_sport', 'sport_id'],
             ['tournament_sports', 'idx_tournament_sports_sport', 'sport_id'],
+            ['tournament_sport_settings', 'idx_tournament_sport_settings_rule', 'rule_version_id'],
+            ['tournament_departments', 'idx_tournament_departments_lookup', 'tournament_id, sport_id'],
             ['teams', 'idx_teams_tournament', 'tournament_id'],
             ['team_members', 'idx_team_members_team', 'team_id'],
             ['team_members', 'idx_team_members_student', 'student_id'],
@@ -258,6 +260,9 @@ final class Database
             ],
             'sports' => [
                 'logo_url' => 'TEXT',
+            ],
+            'students' => [
+                'photo_url' => 'TEXT',
             ],
             'tournaments' => [
                 'logo_url' => 'TEXT',

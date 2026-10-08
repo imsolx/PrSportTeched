@@ -6,6 +6,7 @@ const app = {
   sports: [],
   tournaments: [],
   departments: [],
+  students: [],
   teams: [],
   members: [],
   matches: [],
@@ -23,6 +24,9 @@ const app = {
   reportOptions: null,
   reportStep: 1,
   activeReport: null,
+  currentView: 'public',
+  allowedViews: [],
+  workflow: { tournamentId: '', step: 1, data: null },
 };
 
 const $ = (selector, root = document) => root.querySelector(selector);
@@ -34,19 +38,246 @@ document.addEventListener('DOMContentLoaded', () => {
   bindNavigation();
   bindAuth();
   bindForms();
+  bindTournamentWorkspace();
   updateSessionUi();
   const inviteToken = new URLSearchParams(window.location.search).get('invite');
   if (inviteToken) {
     openInviteAccept(inviteToken);
   } else {
-    showView('public');
+    const requestedView = new URLSearchParams(window.location.search).get('view');
+    showView(requestedView && $(`#view-${requestedView}`) ? requestedView : 'public');
   }
 });
 
 function bindNavigation() {
   $$('[data-view-button]').forEach(button => {
-    button.addEventListener('click', () => showView(button.dataset.viewButton));
+    button.addEventListener('click', event => {
+      event.preventDefault();
+      showView(button.dataset.viewButton);
+    });
   });
+}
+
+function bindTournamentWorkspace() {
+  $$('[data-workflow-step-button]').forEach(button => {
+    button.addEventListener('click', () => setWorkflowStep(Number(button.dataset.workflowStepButton)));
+  });
+  $('#workflow-tournament-select').addEventListener('change', event => loadTournamentWorkspace(event.target.value, false));
+  $('#workflow-settings-button').addEventListener('click', openWorkflowSettings);
+  $('#workflow-previous-button').addEventListener('click', () => setWorkflowStep(app.workflow.step - 1));
+  $('#workflow-next-button').addEventListener('click', () => setWorkflowStep(app.workflow.step + 1));
+  $('#workflow-edit-sports').addEventListener('click', () => openSelectedTournamentEditor());
+  $('#workflow-department-sport').addEventListener('change', renderWorkflowDepartmentOptions);
+  $('#workflow-save-departments').addEventListener('click', async event => {
+    await runTask(event.currentTarget, async () => {
+      const sportId = $('#workflow-department-sport').value;
+      const departmentCodes = $$('input[name="workflow_department_codes[]"]:checked').map(input => input.value);
+      await request('tournaments.departments', {
+        tournament_id: app.workflow.tournamentId,
+        sport_id: sportId,
+        department_codes: departmentCodes,
+      });
+      await loadTournamentWorkspace(app.workflow.tournamentId, false);
+      toast('บันทึกสาขาที่เข้าร่วมแล้ว');
+    });
+  });
+  $$('[data-workflow-view]').forEach(button => {
+    button.addEventListener('click', () => showView(button.dataset.workflowView));
+  });
+}
+
+function setWorkflowStep(step, scroll = true) {
+  app.workflow.step = Math.min(11, Math.max(1, Number(step) || 1));
+  $$('[data-workflow-step]').forEach(section => {
+    const steps = String(section.dataset.workflowStep).split(/\s+/).map(Number);
+    section.hidden = !steps.includes(app.workflow.step);
+  });
+  $$('[data-workflow-step-button]').forEach(button => {
+    const number = Number(button.dataset.workflowStepButton);
+    button.classList.toggle('active', number === app.workflow.step);
+    button.setAttribute('aria-current', number === app.workflow.step ? 'step' : 'false');
+  });
+  const details = workflowStepDetails(app.workflow.step);
+  const complete = Boolean(app.workflow.data?.steps?.[app.workflow.step]);
+  $('#workflow-step-count').textContent = `ขั้นที่ ${app.workflow.step} จาก 11`;
+  $('#workflow-step-title').textContent = details.title;
+  $('#workflow-step-description').textContent = details.description;
+  $('#workflow-settings-button span').textContent = details.action;
+  $('#workflow-step-state').textContent = complete ? 'เสร็จแล้ว' : 'กำลังทำ';
+  $('#workflow-step-state').classList.toggle('complete', complete);
+  $('#workflow-previous-button').disabled = app.workflow.step === 1;
+  $('#workflow-next-button').disabled = app.workflow.step === 11;
+  $('#workflow-next-button span').textContent = app.workflow.step === 10 ? 'ไปข่าวและรายงาน' : 'ขั้นถัดไป';
+  $('#workflow-navigation-hint').textContent = complete
+    ? 'ขั้นนี้เรียบร้อยแล้ว สามารถไปขั้นถัดไปได้'
+    : details.hint;
+  if (scroll) {
+    const activeButton = $(`[data-workflow-step-button="${app.workflow.step}"]`);
+    activeButton?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    $('#workflow-step-title').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+function workflowStepDetails(step) {
+  return ({
+    1: { title: 'ข้อมูลทัวร์นาเมนต์', action: app.workflow.tournamentId ? 'แก้ไขข้อมูลทัวร์นาเมนต์' : 'สร้างทัวร์นาเมนต์', description: 'กำหนดชื่อ ปีการศึกษา รูปแบบการแข่งขัน และสถานะของรายการ', hint: 'เริ่มจากสร้างทัวร์นาเมนต์และบันทึกข้อมูลหลัก' },
+    2: { title: 'เลือกกีฬาที่จัด', action: 'เลือกและแก้ไขกีฬา', description: 'เลือกกีฬาทั้งหมดที่จะจัดในทัวร์นาเมนต์นี้', hint: 'ต้องเลือกกีฬาอย่างน้อย 1 รายการก่อนตั้งค่ากติกา' },
+    3: { title: 'ตั้งกติกาแต่ละกีฬา', action: 'ตั้งค่ากติกา', description: 'กำหนดชุดกติกาและยืนยันความพร้อมแยกเป็นรายกีฬา', hint: 'ตั้งค่ากติกาของกีฬาแต่ละรายการให้เป็นพร้อมใช้งาน' },
+    4: { title: 'กำหนดสาขาที่เข้าร่วม', action: 'เลือกสาขา', description: 'ระบุสาขาที่ส่งทีมเข้าร่วม โดยเลือกแยกตามชนิดกีฬา', hint: 'เลือกกีฬา แล้วบันทึกสาขาที่เข้าร่วมให้ครบ' },
+    5: { title: 'นำเข้ารายชื่อนักศึกษา', action: 'เริ่มนำเข้ารายชื่อ', description: 'เตรียมข้อมูลนักศึกษาที่จะนำไปจัดเป็นสมาชิกของแต่ละทีม', hint: 'เพิ่มรายชื่อนักศึกษาหรือนำเข้าจากไฟล์ CSV' },
+    6: { title: 'สร้างทีมแข่งขัน', action: 'สร้างทีมใหม่', description: 'สร้างทีมให้ตรงกับกีฬาและสาขาที่กำหนดไว้', hint: 'เพิ่มทีมอย่างน้อย 1 ทีมในทัวร์นาเมนต์นี้' },
+    7: { title: 'จัดสมาชิกเข้าทีม', action: 'เพิ่มสมาชิกใหม่', description: 'เลือกนักศึกษา บทบาท และหมายเลขเสื้อให้สมาชิกแต่ละทีม', hint: 'เพิ่มสมาชิกให้ทีมที่สร้างไว้ก่อนตรวจความพร้อม' },
+    8: { title: 'ตรวจสอบความพร้อม', action: 'ตรวจรายการที่ยังขาด', description: 'ตรวจว่ากติกา สาขา ทีม และสมาชิกพร้อมสำหรับทุกกีฬา', hint: 'แก้รายการสีส้มให้ครบก่อนสร้างตารางแข่งขัน' },
+    9: { title: 'สร้างตารางแข่งขัน', action: 'สร้างแมตช์ใหม่', description: 'กำหนดคู่แข่งขัน รอบ วันเวลา สนาม และผู้ตัดสิน', hint: 'สร้างแมตช์ตามรูปแบบการแข่งขันที่กำหนด' },
+    10: { title: 'บันทึกผลการแข่งขัน', action: 'เปิดฟอร์มบันทึกผล', description: 'บันทึกคะแนน ผู้ชนะ เวลา และเหตุการณ์ของแต่ละแมตช์', hint: 'เลือกแมตช์ที่แข่งขันแล้วเพื่อบันทึกผล' },
+    11: { title: 'จัดทำข่าวและรายงาน', action: 'จัดทำข่าว', description: 'นำผลการแข่งขันที่ยืนยันแล้วไปจัดทำข่าวและรายงานสรุป', hint: 'เลือกจัดทำข่าวประชาสัมพันธ์หรือรายงานผล' },
+  })[step];
+}
+
+function openSelectedTournamentEditor() {
+  const tournament = app.workflow.data?.tournament;
+  openEditor('tournament-form', tournament || null);
+}
+
+function openWorkflowSettings() {
+  const step = app.workflow.step;
+  if (step <= 2) return openSelectedTournamentEditor();
+  if (step === 3) {
+    const sport = app.workflow.data?.sports?.[0];
+    if (sport) openTournamentSportSetting(sport);
+    else toast('กรุณาเลือกกีฬาในทัวร์นาเมนต์ก่อน', true);
+    return;
+  }
+  if (step === 4) {
+    $('#workflow-department-sport').focus();
+    return;
+  }
+  if (step === 5) {
+    openStudentImport();
+    return;
+  }
+  if (step === 6) return openEditor('team-form', { tournament_id: app.workflow.tournamentId });
+  if (step === 7) return openEditor('member-form');
+  if (step === 9) return openEditor('match-form', { tournament_id: app.workflow.tournamentId });
+  if (step === 10) return openEditor('result-form');
+  if (step === 11) return showView('news');
+  $('#workflow-readiness').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function loadTournamentWorkspace(tournamentId = '', resetStep = false) {
+  const selected = String(tournamentId || app.workflow.tournamentId || app.tournaments[0]?.id || '');
+  app.workflow.tournamentId = selected;
+  setOptions($('#workflow-tournament-select'), app.tournaments, row => row.id, row => row.name, 'เลือกทัวร์นาเมนต์');
+  $('#workflow-tournament-select').value = selected;
+  if (!selected) {
+    app.workflow.data = null;
+    $('#workflow-tournament-name').textContent = 'ยังไม่มีทัวร์นาเมนต์';
+    $('#workflow-tournament-meta').textContent = 'สร้างทัวร์นาเมนต์เพื่อเริ่มจัดการข้อมูล';
+    $('#workflow-notice span').textContent = 'เริ่มจากสร้างทัวร์นาเมนต์ แล้วเลือกกีฬาที่จัด';
+    updateWorkflowProgress();
+    setWorkflowStep(1, false);
+    return;
+  }
+  const data = await request('tournaments.workspace', { tournament_id: selected });
+  app.workflow.data = data;
+  const tournament = data.tournament;
+  $('#workflow-tournament-name').textContent = tournament.name;
+  $('#workflow-tournament-meta').textContent = `ปีการศึกษา ${tournament.academic_year || '-'} · ${tournament.sport_name || 'ยังไม่เลือกกีฬา'}`;
+  $('#workflow-tournament-status').textContent = workspace.labels[tournament.status] || tournament.status;
+  $('#workflow-notice span').textContent = `ขั้นที่แนะนำถัดไป: ${data.suggested_step} · ${$$('[data-workflow-step-button]')[data.suggested_step - 1]?.textContent.trim() || ''}`;
+  $$('[data-workflow-step-button]').forEach(button => {
+    const number = Number(button.dataset.workflowStepButton);
+    button.classList.toggle('complete', Boolean(data.steps[number]));
+    button.classList.toggle('attention', number === Number(data.suggested_step));
+  });
+  updateWorkflowProgress();
+  renderWorkflowSports();
+  renderWorkflowDepartmentOptions();
+  renderWorkflowReadiness();
+  syncStudentScope();
+  if (resetStep) app.workflow.step = 1;
+  setWorkflowStep(app.workflow.step, false);
+  refreshIcons($('#view-matches'));
+}
+
+function updateWorkflowProgress() {
+  const steps = app.workflow.data?.steps || {};
+  const complete = Array.from({ length: 11 }, (_, index) => Boolean(steps[index + 1])).filter(Boolean).length;
+  $('#workflow-progress-label').textContent = `ความคืบหน้า ${complete} จาก 11 ขั้น`;
+  $('#workflow-progress-bar').style.width = `${Math.round((complete / 11) * 100)}%`;
+}
+
+function renderWorkflowSports() {
+  const rows = app.workflow.data?.sports || [];
+  renderTable('#workflow-sports-table', [
+    ['name', 'กีฬา'],
+    ['type', 'ประเภท', value => workspace.labels[value] || value],
+    ['rule_name', 'กติกาที่ใช้', value => value || 'ยังไม่เลือก'],
+    ['setting_status', 'สถานะ', value => ({ pending: 'ยังตั้งค่าไม่ครบ', ready: 'พร้อมใช้งาน', locked: 'ล็อกแล้ว' }[value] || value)],
+    ['department_count', 'สาขา'],
+    ['team_count', 'ทีม'],
+    ['actions', 'จัดการ', (_, row) => rowActions([
+      ['ตั้งค่ากติกา', () => openTournamentSportSetting(row)],
+      ['สร้างชุดกติกา', () => openNewTournamentRule(row)],
+    ])],
+  ], rows);
+}
+
+function openTournamentSportSetting(sport) {
+  const rules = app.sportRules.filter(row => String(row.sport_id) === String(sport.id));
+  setOptions($('#workflow-rule-version'), rules, row => row.id, row => `v${row.version_number} · ${row.name}`, 'เลือกชุดกติกา');
+  openEditor('tournament-sport-setting-form', {
+    tournament_id: app.workflow.tournamentId,
+    sport_id: sport.id,
+    sport_name: sport.name,
+    rule_version_id: sport.rule_version_id || '',
+    status: sport.setting_status || 'pending',
+    notes: sport.setting_notes || '',
+  });
+}
+
+function openNewTournamentRule(sport) {
+  openEditor('sport-rule-form', {
+    sport_id: sport.id,
+    name: `${app.workflow.data?.tournament?.name || 'ทัวร์นาเมนต์'} · ${sport.name}`,
+    category: sport.type || '',
+    player_type: sport.type || 'team',
+    team_size: sport.max_players || 1,
+    is_active: 1,
+  });
+}
+
+function renderWorkflowDepartmentOptions() {
+  const sports = app.workflow.data?.sports || [];
+  const select = $('#workflow-department-sport');
+  const current = select.value;
+  setOptions(select, sports, row => row.id, row => row.name, 'เลือกกีฬา');
+  if (sports.some(row => String(row.id) === String(current))) select.value = current;
+  const sport = sports.find(row => String(row.id) === String(select.value));
+  const selected = new Set((sport?.department_codes || []).map(String));
+  $('#workflow-department-options').innerHTML = app.departments.map(row => `
+    <label class="department-choice"><input type="checkbox" name="workflow_department_codes[]" value="${escapeAttr(row.code)}" ${selected.has(String(row.code)) ? 'checked' : ''}><span><strong>${escapeHtml(row.code)}</strong>${escapeHtml(row.name)}</span></label>
+  `).join('') || emptyState('ยังไม่มีข้อมูลสาขา');
+  $('#workflow-department-summary').innerHTML = sports.length ? `
+    <h3>สรุปสาขาที่กำหนด</h3>${sports.map(row => `<div><strong>${escapeHtml(row.name)}</strong><span>${Number(row.department_count || 0)} สาขา</span></div>`).join('')}
+  ` : '<p class="muted">เลือกกีฬาในทัวร์นาเมนต์ก่อน</p>';
+}
+
+function renderWorkflowReadiness() {
+  const data = app.workflow.data;
+  const target = $('#workflow-readiness');
+  if (!data?.sports?.length) {
+    target.innerHTML = emptyState('ยังไม่มีกีฬาในทัวร์นาเมนต์');
+    return;
+  }
+  const checks = [
+    ['rule_ready', 'กติกา'], ['departments_ready', 'สาขา'], ['roster_ready', 'ทีม/สมาชิก'], ['schedule_ready', 'ตารางแข่งขัน'],
+  ];
+  target.innerHTML = `<div class="readiness-list">${data.sports.map(sport => `
+    <article><div><strong>${escapeHtml(sport.name)}</strong><span>${sport.team_count} ทีม · ${sport.member_count} คน · ${sport.match_count} แมตช์</span></div>
+    <div class="readiness-checks">${checks.map(([key, label]) => `<span class="${sport[key] ? 'done' : 'pending'}">${icon(sport[key] ? 'circle-check' : 'circle-alert')}${label}</span>`).join('')}</div></article>
+  `).join('')}</div>`;
+  refreshIcons(target);
 }
 
 function bindAuth() {
@@ -102,15 +333,36 @@ function bindForms() {
     await loadSportsAdmin();
     await loadPublicHome();
   });
-  bindSaveForm('#sport-rule-form', 'sportRules.save', loadSportsAdmin);
+  bindSaveForm('#sport-rule-form', 'sportRules.save', async () => {
+    await loadSportsAdmin();
+    if (app.workflow.tournamentId) await loadTournamentWorkspace(app.workflow.tournamentId, false);
+  });
   bindSaveForm('#organization-form', 'organizations.save', async () => {
     await loadSportsAdmin();
     await loadAdminRefs();
   });
   bindSaveForm('#student-form', 'students.save', loadStudentsAdmin);
+  $('#student-scope-faculty').addEventListener('change', () => {
+    $('#student-scope-department').value = '';
+    $('#student-scope-sport').value = '';
+    syncStudentScope();
+  });
+  $('#student-scope-department').addEventListener('change', () => {
+    $('#student-scope-sport').value = '';
+    syncStudentScope();
+  });
+  $('#student-scope-sport').addEventListener('change', renderScopedStudents);
+  $('#student-photo-file').addEventListener('change', async event => {
+    const file = event.target.files?.[0];
+    syncStudentPhotoPreview(file ? await fileToDataUrl(file) : $('#student-photo-url').value);
+  });
+  $('#student-photo-url').addEventListener('input', event => syncStudentPhotoPreview(event.target.value));
   bindSaveForm('#tournament-form', 'tournaments.save', async () => {
     await loadMatchesAdmin();
     await loadPublicHome();
+  });
+  bindSaveForm('#tournament-sport-setting-form', 'tournaments.sportSetting', async () => {
+    await loadTournamentWorkspace(app.workflow.tournamentId, false);
   });
   bindSaveForm('#team-form', 'teams.save', async () => {
     await loadTeamsAdmin();
@@ -119,6 +371,7 @@ function bindForms() {
   });
   bindSaveForm('#member-form', 'teamMembers.save', async () => {
     await loadTeamsAdmin();
+    if (app.workflow.tournamentId) await loadTournamentWorkspace(app.workflow.tournamentId, false);
     await loadPublicAthletes();
   });
   bindSaveForm('#match-form', 'matches.save', async () => {
@@ -189,12 +442,12 @@ function bindForms() {
   });
 
   bindTaskButton('#students-csv-check', async () => {
-    const rows = parseCsv($('#students-csv').value);
+    const rows = scopedStudentImportRows();
     const result = await request('ai.csv', { kind: 'students', rows });
     $('#students-import-result').textContent = summarizeObject(result);
   });
   bindTaskButton('#students-csv-import', async () => {
-    const rows = parseCsv($('#students-csv').value);
+    const rows = scopedStudentImportRows();
     const result = await request('students.import', { rows });
     $('#students-import-result').textContent = importSummary(result);
     await loadStudentsAdmin();
@@ -271,7 +524,19 @@ function bindForms() {
   $('#home-tournament-filter').addEventListener('change', event => filterPublicHome(event.target.value));
   $('#schedule-tournament-filter').addEventListener('change', event => loadPublicSchedule(event.target.value));
   $('#results-tournament-filter').addEventListener('change', event => loadPublicResults(event.target.value));
-  $('#athlete-sport-filter').addEventListener('change', loadPublicAthletes);
+  $('#athlete-faculty-filter').addEventListener('change', () => {
+    $('#athlete-department-filter').value = '';
+    $('#athlete-sport-filter').value = '';
+    syncAthleteDepartmentOptions();
+    syncAthleteSportOptions();
+    renderAthleteBoards();
+  });
+  $('#athlete-department-filter').addEventListener('change', () => {
+    $('#athlete-sport-filter').value = '';
+    syncAthleteSportOptions();
+    renderAthleteBoards();
+  });
+  $('#athlete-sport-filter').addEventListener('change', renderAthleteBoards);
   $('#athlete-team-filter').addEventListener('input', renderAthleteBoards);
   $('#match-tournament-select').addEventListener('change', syncMatchTeamOptions);
   $('#result-match-select').addEventListener('change', syncResultWinnerOptions);
@@ -312,17 +577,20 @@ function bindSaveForm(selector, action, afterSave) {
     const form = event.currentTarget;
     await runForm(form, async () => {
       const data = formData(form);
-      const logoFiles = {
-        '#sport-form': '#sport-logo-file',
-        '#team-form': '#team-logo-file',
-        '#tournament-form': '#tournament-logo-file',
-        '#organization-form': '#organization-logo-file',
+      const imageFiles = {
+        '#sport-form': { selector: '#sport-logo-file', field: 'logo_url', kind: 'logo' },
+        '#team-form': { selector: '#team-logo-file', field: 'logo_url', kind: 'logo' },
+        '#tournament-form': { selector: '#tournament-logo-file', field: 'logo_url', kind: 'logo' },
+        '#organization-form': { selector: '#organization-logo-file', field: 'logo_url', kind: 'logo' },
+        '#student-form': { selector: '#student-photo-file', field: 'photo_url', kind: 'profile' },
       };
-      if (logoFiles[selector]) {
-        const file = $(logoFiles[selector])?.files?.[0];
+      const imageConfig = imageFiles[selector];
+      if (imageConfig) {
+        const file = $(imageConfig.selector)?.files?.[0];
         if (file) {
-          const upload = await request('media.upload', { data_url: await fileToDataUrl(file) });
-          data.logo_url = upload.url;
+          const upload = await request('media.upload', { data_url: await fileToDataUrl(file), kind: imageConfig.kind });
+          data[imageConfig.field] = upload.url;
+          if (form.elements[imageConfig.field]) form.elements[imageConfig.field].value = upload.url;
         }
       }
       if (selector === '#sport-rule-form') {
@@ -370,7 +638,6 @@ async function request(action, payload = {}, options = {}) {
 
 function updateSessionUi() {
   const loggedIn = app.user && app.user.role && app.user.role !== 'guest';
-  document.body.classList.toggle('admin-mode', Boolean(loggedIn));
   $('#current-user-label').textContent = loggedIn ? (app.user.name || app.user.email) : 'ผู้เยี่ยมชม';
   $('#login-toggle').hidden = loggedIn;
   $('#profile-toggle').hidden = !loggedIn;
@@ -385,12 +652,29 @@ function updateSessionUi() {
     public_relations: ['dashboard', 'news', 'tasks', 'reports'],
     viewer: ['dashboard', 'reports'],
   };
-  const allowed = roleViews[app.user?.role] || [];
-  $$('.admin-link').forEach(button => {
-    button.hidden = !allowed.includes(button.dataset.viewButton);
-  });
+  app.allowedViews = roleViews[app.user?.role] || [];
+  syncNavigationMode();
   updateShortcuts();
   refreshIcons($('.session-box'));
+}
+
+function syncNavigationMode() {
+  const loggedIn = app.user && app.user.role && app.user.role !== 'guest';
+  const publicView = app.currentView.startsWith('public');
+  const adminMode = Boolean(loggedIn && !publicView);
+  document.body.classList.toggle('admin-mode', adminMode);
+  $$('.admin-link').forEach(button => {
+    button.hidden = !adminMode || !app.allowedViews.includes(button.dataset.viewButton);
+  });
+
+  const switchButton = $('#frontend-view-button');
+  switchButton.hidden = !loggedIn;
+  switchButton.dataset.viewButton = publicView ? 'dashboard' : 'public';
+  switchButton.href = publicView ? '?view=dashboard' : './';
+  switchButton.title = publicView ? 'กลับหลังบ้าน' : 'ดูหน้าเว็บไซต์';
+  switchButton.setAttribute('aria-label', switchButton.title);
+  switchButton.innerHTML = `${icon(publicView ? 'layout-dashboard' : 'monitor')}<span>${switchButton.title}</span>`;
+  refreshIcons(switchButton);
 }
 
 function openProfileDialog() {
@@ -413,8 +697,11 @@ async function showView(name) {
   if (target) {
     target.hidden = false;
   }
+  app.currentView = name;
   $('#view-public-home-extra').hidden = name !== 'public';
   updateWorkspaceView(name);
+  syncNavigationMode();
+  window.scrollTo({ top: 0, behavior: 'instant' });
 
   try {
     if (name === 'public') await loadPublicHome();
@@ -428,8 +715,10 @@ async function showView(name) {
     if (name === 'students') await loadStudentsAdmin();
     if (name === 'teams') await loadTeamsAdmin();
     if (name === 'matches') {
-      await loadTeamsAdmin();
       await loadMatchesAdmin();
+      await loadTeamsAdmin();
+      if (['super_admin', 'admin', 'registration_officer'].includes(app.user?.role)) await loadStudentsAdmin();
+      else renderTable('#students-table', [['notice', 'ข้อมูล', () => 'สิทธิ์ของคุณดูแลขั้นตอนอื่นในทัวร์นาเมนต์']], [{ notice: '' }]);
     }
     if (name === 'news') await loadNewsAdmin();
     if (name === 'tasks') await loadTasksAdmin();
@@ -468,7 +757,6 @@ function syncPublicFilters() {
   setOptions($('#home-tournament-filter'), app.tournaments, row => row.id, row => `${row.name} (${row.sport_name || '-'})`, 'ทุกทัวร์นาเมนท์');
   setOptions($('#schedule-tournament-filter'), app.tournaments, row => row.id, row => `${row.name} (${row.sport_name || '-'})`, 'ทุกทัวร์นาเมนท์');
   setOptions($('#results-tournament-filter'), app.tournaments, row => row.id, row => `${row.name} (${row.sport_name || '-'})`, 'ทุกทัวร์นาเมนท์');
-  setOptions($('#athlete-sport-filter'), app.sports, row => row.id, row => row.name, 'ทุกกีฬา');
 }
 
 function renderPublicSportsPage() {
@@ -485,41 +773,153 @@ function renderPublicSportsPage() {
 }
 
 async function loadPublicAthletes() {
-  const sportId = $('#athlete-sport-filter').value || '';
-  const data = await request('public.athletes', { sport_id: sportId });
+  const data = await request('public.athletes');
   app.athleteBoards = data.teams || [];
   if (!app.sports.length) {
     app.sports = data.sports || [];
-    setOptions($('#athlete-sport-filter'), app.sports, row => row.id, row => row.name, 'ทุกกีฬา');
   }
+  syncAthleteFacultyOptions();
+  syncAthleteDepartmentOptions();
+  syncAthleteSportOptions();
   renderAthleteBoards();
 }
 
-function renderAthleteBoards() {
-  const query = ($('#athlete-team-filter').value || '').toLowerCase();
-  const rows = (app.athleteBoards || []).filter(row => {
-    return !query || [row.team_name, row.department_name, row.sport_name].join(' ').toLowerCase().includes(query);
+function athleteFacultyName(board) {
+  return String(board.faculty_name || 'ไม่ระบุคณะ');
+}
+
+function syncAthleteFacultyOptions() {
+  const select = $('#athlete-faculty-filter');
+  const current = select.value;
+  const rows = [...new Set((app.athleteBoards || []).map(athleteFacultyName))]
+    .sort((a, b) => a.localeCompare(b, 'th'))
+    .map(name => ({ name }));
+  setOptions(select, rows, row => row.name, row => row.name, 'เลือกคณะ');
+  if (rows.some(row => row.name === current)) select.value = current;
+}
+
+function syncAthleteDepartmentOptions() {
+  const faculty = $('#athlete-faculty-filter').value;
+  const select = $('#athlete-department-filter');
+  const current = select.value;
+  const seen = new Map();
+  (app.athleteBoards || []).filter(board => athleteFacultyName(board) === faculty).forEach(board => {
+    seen.set(String(board.department_code || ''), board.department_name || board.department_code || 'ไม่ระบุสาขา');
   });
+  const rows = [...seen].map(([code, name]) => ({ code, name })).sort((a, b) => a.name.localeCompare(b.name, 'th'));
+  setOptions(select, rows, row => row.code, row => row.name, 'เลือกสาขา');
+  select.disabled = !faculty;
+  if (rows.some(row => row.code === current)) select.value = current;
+}
+
+function syncAthleteSportOptions() {
+  const faculty = $('#athlete-faculty-filter').value;
+  const department = $('#athlete-department-filter').value;
+  const select = $('#athlete-sport-filter');
+  const current = select.value;
+  const seen = new Map();
+  (app.athleteBoards || []).filter(board => athleteFacultyName(board) === faculty && String(board.department_code || '') === department).forEach(board => {
+    seen.set(String(board.sport_id || ''), board.sport_name || 'ไม่ระบุกีฬา');
+  });
+  const rows = [...seen].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, 'th'));
+  setOptions(select, rows, row => row.id, row => row.name, 'เลือกกีฬา');
+  select.disabled = !department;
+  if (rows.some(row => row.id === current)) select.value = current;
+}
+
+function renderAthleteBoards() {
+  const faculty = $('#athlete-faculty-filter').value;
+  const department = $('#athlete-department-filter').value;
+  const sport = $('#athlete-sport-filter').value;
+  const ready = Boolean(faculty && department && sport);
+  const currentStep = sport ? 4 : department ? 3 : faculty ? 2 : 1;
+  $$('[data-athlete-flow-step]').forEach(element => {
+    const step = Number(element.dataset.athleteFlowStep);
+    element.classList.toggle('complete', step < currentStep || (ready && step === 4));
+    element.classList.toggle('active', step === currentStep);
+  });
+  if (window.innerWidth <= 900) {
+    $(`[data-athlete-flow-step="${currentStep}"]`)?.scrollIntoView({ behavior: 'auto', block: 'nearest', inline: 'center' });
+  }
+  $('#athlete-department-filter').disabled = !faculty;
+  $('#athlete-sport-filter').disabled = !department;
+  $('#athlete-results').hidden = !ready;
+  const notice = !faculty
+    ? 'เริ่มจากเลือกคณะ เพื่อดูสาขาที่มีนักกีฬาเข้าร่วม'
+    : !department
+      ? 'เลือกสาขาในคณะที่เลือก เพื่อดูชนิดกีฬาที่มีทีมเข้าร่วม'
+      : !sport
+        ? 'เลือกกีฬา เพื่อแสดงทีมและรายชื่อนักกีฬา'
+        : 'เลือกครบแล้ว รายชื่อนักกีฬาแสดงอยู่ด้านล่าง';
+  $('#athlete-flow-notice span').textContent = notice;
+  $('#athlete-flow-notice').classList.toggle('complete', ready);
+  if (!ready) {
+    $('#athlete-total-count').textContent = '0 นักกีฬา';
+    $('#athlete-board-list').innerHTML = '';
+    refreshIcons($('#view-public-athletes'));
+    return;
+  }
+  const query = ($('#athlete-team-filter').value || '').trim().toLowerCase();
+  const rows = (app.athleteBoards || []).filter(row => {
+    if (athleteFacultyName(row) !== faculty || String(row.department_code || '') !== department || String(row.sport_id || '') !== sport) return false;
+    if (!query) return true;
+    return [row.team_name, row.department_name, row.sport_name, ...(row.players || []).flatMap(player => [player.full_name, player.student_code, player.field_position])]
+      .join(' ').toLowerCase().includes(query);
+  }).map(board => ({
+    ...board,
+    players: (board.players || []).filter(player => !query || [player.full_name, player.student_code, player.field_position, board.team_name].join(' ').toLowerCase().includes(query)),
+  }));
   const target = $('#athlete-board-list');
+  const playerCount = rows.reduce((total, board) => total + board.players.length, 0);
+  $('#athlete-total-count').textContent = `${playerCount} นักกีฬา`;
+  const sportName = rows[0]?.sport_name || $('#athlete-sport-filter').selectedOptions[0]?.textContent || 'กีฬา';
+  const departmentName = rows[0]?.department_name || $('#athlete-department-filter').selectedOptions[0]?.textContent || 'สาขา';
+  $('#athlete-results-title').textContent = `${sportName} · ${departmentName}`;
   if (!rows.length) {
-    target.innerHTML = emptyState('ยังไม่มีรายชื่อนักกีฬา');
+    target.innerHTML = emptyState('ไม่พบรายชื่อนักกีฬาตามคำค้นหา');
     return;
   }
   target.innerHTML = rows.map(board => `
-    <article class="athlete-board">
-      <div class="athlete-board-heading">
-        ${board.team_logo_url ? `<img src="${escapeAttr(board.team_logo_url)}" alt="">` : ''}
-        <div><span class="badge">${escapeHtml(board.sport_name || '-')}</span><h3>${escapeHtml(board.team_name || '-')}</h3></div>
-      </div>
-      <p class="muted">${escapeHtml(board.tournament_name || '')} · ${escapeHtml(board.department_name || '')}${board.faculty_name ? ` · ${escapeHtml(board.faculty_name)}` : ''}</p>
-      <div class="players">${(board.players || []).map(player => `
-        <div class="player">
-          <strong>${escapeHtml(player.shirt_number || player.field_position || '-')} ${escapeHtml(player.full_name || '')}</strong>
-          <small>${escapeHtml(player.student_code || '')} · ${escapeHtml(player.field_position || player.role || '')}</small>
+    <section class="athlete-squad">
+      <header class="athlete-squad-head">
+        <div class="athlete-squad-identity">${board.team_logo_url ? `<img src="${escapeAttr(board.team_logo_url)}" alt="โลโก้ ${escapeAttr(board.team_name || '')}">` : icon('shield')}
+          <div><span>${escapeHtml(board.tournament_name || board.sport_name || '')}</span><h4>${escapeHtml(board.team_name || '-')}</h4></div>
         </div>
-      `).join('') || '<p class="muted">ยังไม่มีสมาชิกทีม</p>'}</div>
-    </article>
+        <strong>${board.players.length} ผู้เล่น</strong>
+      </header>
+      <div class="athlete-player-grid">${board.players.map(player => `
+        <article class="athlete-player-card">
+          <div class="athlete-player-visual">
+            ${board.team_logo_url ? `<img class="athlete-team-watermark" src="${escapeAttr(board.team_logo_url)}" alt="" aria-hidden="true">` : ''}
+            <span>${escapeHtml(player.shirt_number || '—')}</span>
+            ${player.photo_url
+              ? `<img class="athlete-profile-photo" src="${escapeAttr(player.photo_url)}" alt="รูปโปรไฟล์ ${escapeAttr(player.full_name || 'นักกีฬา')}">`
+              : `<div class="athlete-player-initials">${escapeHtml(playerInitials(player.full_name || 'นักกีฬา'))}</div>`}
+          </div>
+          <div class="athlete-player-info">
+            <small>${escapeHtml(player.field_position || player.role || 'นักกีฬา')}</small>
+            <h5>${escapeHtml(player.full_name || '-')}</h5>
+            <p>${escapeHtml(player.student_code || 'ไม่ระบุรหัสนักศึกษา')}</p>
+          </div>
+        </article>
+      `).join('') || '<p class="athlete-empty-team">ทีมนี้ยังไม่มีรายชื่อสมาชิก</p>'}</div>
+    </section>
   `).join('');
+  refreshIcons(target);
+}
+
+function playerInitials(name) {
+  return String(name).trim().split(/\s+/).slice(0, 2).map(part => part.charAt(0)).join('').toUpperCase() || 'TS';
+}
+
+function syncStudentPhotoPreview(url = '') {
+  const target = $('#student-photo-preview');
+  if (!target) return;
+  const source = String(url || '').trim();
+  target.innerHTML = source
+    ? `<img src="${escapeAttr(source)}" alt="ตัวอย่างรูปโปรไฟล์">`
+    : icon('user-round');
+  refreshIcons(target);
 }
 
 async function loadPublicSchedule(tournamentId = '') {
@@ -575,6 +975,7 @@ function syncAdminOptions() {
   syncMatchTeamOptions();
   syncTeamSportOptions();
   syncResultWinnerOptions();
+  syncStudentScope();
 }
 
 function syncTeamSportOptions() {
@@ -719,12 +1120,92 @@ async function toggleSport(row) {
 
 async function loadStudentsAdmin() {
   if (!app.departments.length) await loadAdminRefs();
-  const rows = await request('students.list', {});
+  app.students = await request('students.list', {});
+  renderScopedStudents();
+}
+
+function studentScopeValues() {
+  return {
+    facultyId: $('#student-scope-faculty')?.value || '',
+    departmentCode: $('#student-scope-department')?.value || '',
+    sportId: $('#student-scope-sport')?.value || '',
+  };
+}
+
+function studentScopeReady() {
+  const scope = studentScopeValues();
+  return Boolean(scope.facultyId && scope.departmentCode && scope.sportId);
+}
+
+function syncStudentScope() {
+  const facultySelect = $('#student-scope-faculty');
+  if (!facultySelect) return;
+  const scope = studentScopeValues();
+  const faculties = [...new Map(app.departments.map(row => [
+    String(row.faculty_id || `name:${row.faculty_name || 'unassigned'}`),
+    { id: String(row.faculty_id || `name:${row.faculty_name || 'unassigned'}`), name: row.faculty_name || 'ไม่ระบุคณะ' },
+  ])).values()];
+  setOptions(facultySelect, faculties, row => row.id, row => row.name, 'เลือกคณะ/หน่วยงาน');
+  if (faculties.some(row => row.id === scope.facultyId)) facultySelect.value = scope.facultyId;
+
+  const facultyId = facultySelect.value;
+  const departments = app.departments.filter(row => String(row.faculty_id || `name:${row.faculty_name || 'unassigned'}`) === facultyId);
+  const departmentSelect = $('#student-scope-department');
+  setOptions(departmentSelect, departments, row => row.code, row => `${row.code} · ${row.name}`, 'เลือกสาขา');
+  departmentSelect.disabled = !facultyId;
+  if (departments.some(row => String(row.code) === scope.departmentCode)) departmentSelect.value = scope.departmentCode;
+
+  const departmentCode = departmentSelect.value;
+  const workflowSports = app.workflow.data?.sports || [];
+  const sports = workflowSports.length ? workflowSports : app.sports;
+  const sportSelect = $('#student-scope-sport');
+  setOptions(sportSelect, sports, row => row.id, row => row.name, 'เลือกกีฬา');
+  sportSelect.disabled = !departmentCode;
+  if (sports.some(row => String(row.id) === scope.sportId)) sportSelect.value = scope.sportId;
+  renderScopedStudents();
+}
+
+function renderScopedStudents() {
+  const target = $('#students-table');
+  if (!target) return;
+  const scope = studentScopeValues();
+  const actionButtons = $$('[data-student-scope-action]');
+  actionButtons.forEach(button => {
+    button.disabled = !studentScopeReady();
+    button.title = studentScopeReady() ? '' : 'เลือกคณะ สาขา และกีฬาให้ครบก่อน';
+  });
+  const status = $('#student-scope-status');
+  if (!scope.facultyId) status.textContent = 'เริ่มจากเลือกคณะ/หน่วยงาน';
+  else if (!scope.departmentCode) status.textContent = 'ขั้นต่อไป เลือกสาขา';
+  else if (!scope.sportId) status.textContent = 'ขั้นต่อไป เลือกกีฬา';
+  else {
+    const department = app.departments.find(row => String(row.code) === scope.departmentCode);
+    const sport = (app.workflow.data?.sports || app.sports).find(row => String(row.id) === scope.sportId);
+    status.textContent = `${department?.name || scope.departmentCode} · ${sport?.name || 'กีฬาที่เลือก'}`;
+  }
+  $('#student-scope').classList.toggle('complete', studentScopeReady());
+  if (!studentScopeReady()) {
+    target.innerHTML = emptyState('เลือกคณะ สาขา และกีฬาให้ครบ เพื่อดูและจัดการรายชื่อนักศึกษา');
+    refreshIcons(target);
+    return;
+  }
+
+  const teamIds = new Set(app.teams
+    .filter(team => String(team.department_code || '') === scope.departmentCode && String(team.sport_id || '') === scope.sportId)
+    .map(team => String(team.id)));
+  const rosterStudentIds = new Set(app.members
+    .filter(member => teamIds.has(String(member.team_id)))
+    .map(member => String(member.student_id)));
+  const rows = app.students.filter(row => String(row.department_code || '') === scope.departmentCode);
   renderTable('#students-table', [
     ['id', 'ID'],
+    ['photo_url', 'รูป', value => value ? `<img class="student-table-photo" src="${escapeAttr(value)}" alt="">` : icon('user-round'), { html: true }],
     ['student_code', 'รหัส'],
     ['full_name', 'ชื่อ', (_, row) => [row.prefix, row.first_name, row.last_name].filter(Boolean).join(' ')],
     ['department_name', 'สาขา'],
+    ['roster_status', 'สถานะกีฬา', (_, row) => rosterStudentIds.has(String(row.id))
+      ? '<span class="status-badge success">อยู่ในทีมแล้ว</span>'
+      : '<span class="status-badge">รอจัดทีม</span>', { html: true }],
     ['phone', 'โทรศัพท์'],
     ['actions', 'จัดการ', (_, row) => rowActions([
       ['แก้ไข', () => fillForm('#student-form', row)],
@@ -733,17 +1214,50 @@ async function loadStudentsAdmin() {
   ], rows);
 }
 
+function focusMissingStudentScope() {
+  const scope = studentScopeValues();
+  const target = !scope.facultyId ? $('#student-scope-faculty') : !scope.departmentCode ? $('#student-scope-department') : $('#student-scope-sport');
+  target?.focus();
+  toast('กรุณาเลือกคณะ สาขา และกีฬาให้ครบก่อน', true);
+}
+
+function openScopedStudentEditor() {
+  if (!studentScopeReady()) return focusMissingStudentScope();
+  openEditor('student-form', { department_code: studentScopeValues().departmentCode });
+}
+
+function openStudentImport() {
+  if (!studentScopeReady()) return focusMissingStudentScope();
+  $('#students-csv')?.closest('dialog')?.showModal();
+}
+
+function scopedStudentImportRows() {
+  if (!studentScopeReady()) {
+    focusMissingStudentScope();
+    throw new Error('กรุณาเลือกขอบเขตข้อมูลให้ครบก่อนนำเข้า');
+  }
+  const departmentCode = studentScopeValues().departmentCode;
+  const rows = parseCsv($('#students-csv').value).map(row => ({ ...row, department_code: row.department_code || departmentCode }));
+  if (rows.some(row => String(row.department_code) !== departmentCode)) {
+    throw new Error(`ไฟล์ CSV ต้องเป็นสาขา ${departmentCode} เท่านั้น`);
+  }
+  return rows;
+}
+
 async function loadTeamsAdmin() {
-  await loadAdminRefs();
-  app.teams = await request('teams.list', { tournament_id: '' });
-  app.members = await request('teamMembers.list', { team_id: '' });
+  if (!app.sports.length || !app.tournaments.length || !app.departments.length) await loadAdminRefs();
+  const tournamentId = app.workflow.tournamentId || '';
+  app.teams = await request('teams.list', { tournament_id: tournamentId });
+  const members = await request('teamMembers.list', { team_id: '' });
+  const teamIds = new Set(app.teams.map(row => String(row.id)));
+  app.members = tournamentId ? members.filter(row => teamIds.has(String(row.team_id))) : members;
   renderTable('#teams-table', [
     ['id', 'ID'],
     ['name', 'ทีม'],
     ['tournament_name', 'รายการ'],
     ['sport_name', 'กีฬา'],
     ['department_name', 'สาขา'],
-    ['status', 'สถานะ'],
+    ['status', 'สถานะ', value => workspace.labels[value] || value],
     ['actions', 'จัดการ', (_, row) => rowActions([
       ['แก้ไข', () => fillForm('#team-form', row)],
       ['อนุมัติ', () => setTeamStatus(row.id, 'approved')],
@@ -769,13 +1283,21 @@ async function loadTeamsAdmin() {
 async function setTeamStatus(id, status) {
   await request('teams.status', { id, status });
   await loadTeamsAdmin();
+  if (app.workflow.tournamentId) await loadTournamentWorkspace(app.workflow.tournamentId, false);
   toast('เปลี่ยนสถานะทีมแล้ว');
 }
 
 async function loadMatchesAdmin() {
   await loadAdminRefs();
-  app.tournaments = await request('tournaments.list');
-  app.matches = await request('matches.list', { tournament_id: '' });
+  const [tournaments, rules] = await Promise.all([
+    request('tournaments.list'),
+    request('sportRules.list', { sport_id: '' }),
+  ]);
+  app.tournaments = tournaments;
+  app.sportRules = rules;
+  const validSelection = app.tournaments.some(row => String(row.id) === String(app.workflow.tournamentId));
+  app.workflow.tournamentId = validSelection ? String(app.workflow.tournamentId) : String(app.tournaments[0]?.id || '');
+  app.matches = await request('matches.list', { tournament_id: app.workflow.tournamentId });
   renderTable('#tournaments-table', [
     ['id', 'ID'],
     ['name', 'รายการ'],
@@ -783,12 +1305,20 @@ async function loadMatchesAdmin() {
     ['sport_name', 'กีฬา'],
     ['academic_year', 'ปี'],
     ['format', 'รูปแบบ'],
-    ['status', 'สถานะ'],
+    ['status', 'สถานะ', value => workspace.labels[value] || value],
     ['actions', 'จัดการ', (_, row) => rowActions([
       ['แก้ไข', () => fillForm('#tournament-form', row)],
       ['ลบ', () => deleteRow('tournaments.delete', row.id, loadMatchesAdmin), 'danger'],
     ])],
   ], app.tournaments);
+  renderTable('#sport-rules-table', [
+    ['sport_name', 'กีฬา'],
+    ['version_number', 'เวอร์ชัน'],
+    ['name', 'ชื่อกติกา'],
+    ['format', 'รูปแบบ', (_, row) => `${row.period_count} ช่วง x ${row.period_minutes} นาที`],
+    ['is_active', 'ใช้งาน', value => Number(value) ? 'ใช้งาน' : 'เก็บประวัติ'],
+    ['actions', 'จัดการ', (_, row) => rowActions([['แก้ไข', () => fillSportRule(row)]])],
+  ], app.sportRules);
   renderTable('#matches-table', [
     ['match_code', 'รหัส'],
     ['tournament_name', 'รายการ'],
@@ -805,16 +1335,20 @@ async function loadMatchesAdmin() {
     ])],
   ], app.matches);
   syncAdminOptions();
-  const tournamentId = $('#standings-tournament-filter').value || app.tournaments[0]?.id || '';
+  const tournamentId = app.workflow.tournamentId;
   if (tournamentId) {
     $('#standings-tournament-filter').value = String(tournamentId);
     await loadStandings(String(tournamentId));
+    await loadTournamentWorkspace(String(tournamentId), false);
+  } else {
+    await loadTournamentWorkspace('', false);
   }
 }
 
 async function openMatchCenter(matchId) {
   $('#match-center-select').value = String(matchId);
   await loadMatchCenter(String(matchId));
+  setWorkflowStep(10, false);
   $('#match-center-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
