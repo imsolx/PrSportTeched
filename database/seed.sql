@@ -1,5 +1,5 @@
 INSERT OR IGNORE INTO settings (key, value, note) VALUES
-('app_name', 'RMUTT Sports MVP', 'ชื่อระบบ'),
+('app_name', 'Sport Tournament', 'ชื่อระบบ'),
 ('faculty_code', '102', 'รหัสคณะ'),
 ('current_academic_year', '69', 'ปีการศึกษาปัจจุบัน'),
 ('max_sports_per_athlete', '2', 'จำกัดจำนวนกีฬาต่อนักกีฬา');
@@ -25,9 +25,9 @@ VALUES
 (3, 'วิ่ง 100 เมตร', 'individual', 'open', 1, 1, 0, '', 'running', 1, datetime('now'), datetime('now'));
 
 INSERT OR IGNORE INTO news
-(id, title, slug, excerpt, body, cover_image_url, news_type, department_code, status, is_pinned, published_at, author_email, created_at, updated_at)
+(id, title, slug, excerpt, body, cover_image_url, source_url, news_type, department_code, status, is_pinned, published_at, author_email, created_at, updated_at)
 VALUES
-(1, 'เปิดระบบ RMUTT Sports MVP', 'welcome', 'ระบบจัดการกีฬาเวอร์ชันทดลองพร้อมใช้งานแล้ว', 'ทีมงานสามารถเริ่มเพิ่มกีฬา ตารางแข่งขัน ผลการแข่งขัน และประกาศได้จากหน้า Dashboard', '', 'general', NULL, 'published', 1, datetime('now'), '', datetime('now'), datetime('now'));
+(1, 'เปิดระบบ Sport Tournament', 'welcome', 'ระบบจัดการกีฬาเวอร์ชันทดลองพร้อมใช้งานแล้ว', 'ทีมงานสามารถเริ่มเพิ่มกีฬา ตารางแข่งขัน ผลการแข่งขัน และประกาศได้จากหน้า Dashboard', '', 'https://www.rmutt.ac.th/', 'general', NULL, 'published', 1, datetime('now'), '', datetime('now'), datetime('now'));
 
 INSERT OR IGNORE INTO report_categories (id, code, name, description, icon, display_order, is_active) VALUES
 (1, 'competition', 'รายงานประชาสัมพันธ์ผลการแข่งขันกีฬา', 'เรียบเรียงผลการแข่งขัน รางวัล และประเด็นเผยแพร่ข่าวกีฬา', 'trophy', 10, 1),

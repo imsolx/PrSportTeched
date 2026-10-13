@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS users (
   id INT PRIMARY KEY,
   email VARCHAR(190) NOT NULL UNIQUE,
   name VARCHAR(190) NOT NULL,
-  role VARCHAR(50) NOT NULL DEFAULT 'viewer',
+  role VARCHAR(50) NOT NULL DEFAULT 'registration_officer',
   department_code VARCHAR(20),
   sport_ids TEXT,
   password_hash VARCHAR(255),
@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS user_invites (
   token_hash VARCHAR(128) NOT NULL UNIQUE,
   email VARCHAR(190) NOT NULL,
   name VARCHAR(190),
-  role VARCHAR(50) NOT NULL DEFAULT 'viewer',
+  role VARCHAR(50) NOT NULL DEFAULT 'registration_officer',
   department_code VARCHAR(20),
   sport_ids TEXT,
   invited_by VARCHAR(190),
@@ -209,6 +209,7 @@ CREATE TABLE IF NOT EXISTS news (
   excerpt TEXT,
   body MEDIUMTEXT,
   cover_image_url TEXT,
+  source_url TEXT,
   news_type VARCHAR(50) NOT NULL DEFAULT 'general',
   department_code VARCHAR(20),
   status VARCHAR(50) NOT NULL DEFAULT 'draft',
@@ -334,23 +335,6 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   entity_id VARCHAR(100),
   detail_json MEDIUMTEXT,
   created_at VARCHAR(30)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS tasks (
-  id INT PRIMARY KEY,
-  title VARCHAR(190) NOT NULL,
-  description TEXT,
-  category VARCHAR(50) NOT NULL DEFAULT 'general',
-  priority VARCHAR(50) NOT NULL DEFAULT 'normal',
-  status VARCHAR(50) NOT NULL DEFAULT 'todo',
-  due_at VARCHAR(30),
-  related_type VARCHAR(100),
-  related_id VARCHAR(100),
-  assignee_email VARCHAR(190),
-  created_by VARCHAR(190),
-  completed_at VARCHAR(30),
-  created_at VARCHAR(30),
-  updated_at VARCHAR(30)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS report_categories (

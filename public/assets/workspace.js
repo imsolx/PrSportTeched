@@ -3,7 +3,7 @@ const workspace = {
     'sport-form': ['กีฬา', 'sports-table', 'trophy'],
     'sport-rule-form': ['กติกากีฬา', 'sport-rules-table', 'scroll-text'],
     'organization-form': ['หน่วยงาน', 'organizations-table', 'building-2'],
-    'student-form': ['นักศึกษา', 'students-table', 'graduation-cap'],
+    'student-form': ['นักกีฬา', 'students-table', 'users'],
     'team-form': ['ทีม', 'teams-table', 'users'],
     'member-form': ['สมาชิกทีม', 'members-table', 'user-plus'],
     'tournament-form': ['รายการแข่งขัน', 'tournaments-table', 'medal'],
@@ -11,7 +11,6 @@ const workspace = {
     'match-form': ['แมตช์', 'matches-table', 'calendar-days'],
     'result-form': ['ผลการแข่งขัน', 'matches-table', 'clipboard-check'],
     'news-form': ['ข่าวประชาสัมพันธ์', 'news-table', 'newspaper'],
-    'task-form': ['แผนงาน', 'tasks-table', 'list-todo'],
     'user-form': ['ผู้ดูแลระบบ', 'users-table', 'shield-check'],
   },
   labels: {
@@ -58,8 +57,8 @@ function bindTaskButton(selector, handler) {
 function initWorkspace() {
   const navigationIcons = {
     public: 'house', 'public-sports': 'trophy', 'public-athletes': 'users', 'public-schedule': 'calendar-days',
-    'public-results': 'medal', 'public-news': 'newspaper', dashboard: 'layout-dashboard', sports: 'trophy',
-    students: 'graduation-cap', teams: 'users', matches: 'calendar-days', news: 'newspaper', tasks: 'list-todo', users: 'shield-check', reports: 'chart-no-axes-combined',
+    'public-results': 'medal', 'public-standings': 'list-ordered', 'public-bracket': 'git-merge', 'public-news': 'newspaper', dashboard: 'layout-dashboard', sports: 'trophy',
+    students: 'graduation-cap', teams: 'users', matches: 'calendar-days', news: 'newspaper', users: 'shield-check', reports: 'chart-no-axes-combined',
   };
   $$('.tab').forEach(button => {
     button.innerHTML = `${icon(navigationIcons[button.dataset.viewButton])}<span>${button.textContent}</span>`;
@@ -119,6 +118,10 @@ function initWorkspace() {
         id === 'result-form' ? '' : 'primary'
       );
       if (id === 'student-form') createButton.dataset.studentScopeAction = 'create';
+      if (id === 'result-form') createButton.classList.add('result-only');
+      if (['tournament-form', 'sport-rule-form'].includes(id)) createButton.classList.add('tournament-only');
+      if (['team-form', 'member-form', 'match-form'].includes(id)) createButton.classList.add('schedule-only');
+      if (id === 'student-form') createButton.classList.add('athlete-only');
       head.append(createButton);
     }
   });
@@ -167,6 +170,7 @@ function initWorkspace() {
       teamSection,
       memberSection,
       $('#workflow-readiness-section'),
+      $('#fixture-generator'),
       matchSection,
       matchCenterSection,
       standingsSection,
@@ -186,14 +190,14 @@ function initWorkspace() {
     const title = tab?.textContent || $('h2', panel)?.textContent || 'จัดการข้อมูล';
     const head = document.createElement('div');
     head.className = 'section-head page-heading';
-    head.innerHTML = `<div><p class="section-kicker">TECHED SPORT / จัดการข้อมูล</p><h2>${escapeHtml(title)}</h2></div>`;
+    head.innerHTML = `<div><p class="section-kicker">SPORT TOURNAMENT / จัดการข้อมูล</p><h2>${escapeHtml(title)}</h2></div>`;
     panel.prepend(head);
   });
   $$('select option').forEach(option => {
     if (workspace.labels[option.value] && option.textContent === option.value) option.textContent = workspace.labels[option.value];
   });
   $$('.section-head select').forEach(select => select.setAttribute('aria-label', select.id === 'athlete-sport-filter' ? 'กรองกีฬา' : 'กรองรายการแข่งขัน'));
-  $('#athlete-team-filter').setAttribute('aria-label', 'ค้นหาทีมหรือสาขา');
+  $('#athlete-team-filter').setAttribute('aria-label', 'ค้นหาชื่อนักกีฬาหรือทีม');
   $('#login-toggle').prepend(document.createRange().createContextualFragment(icon('log-in')));
   $('#logout-button').prepend(document.createRange().createContextualFragment(icon('log-out')));
   bindDialogDismiss($('#login-dialog'), () => $('#login-dialog').close());
@@ -225,7 +229,7 @@ function updateShortcuts() {
   const host = $('#dashboard-shortcuts');
   host.replaceChildren();
   $$('.admin-link:not([hidden])').filter(tab => tab.dataset.viewButton !== 'dashboard').forEach(tab => {
-    host.append(command(tab.textContent, { sports: 'trophy', students: 'graduation-cap', teams: 'users', matches: 'calendar-days', news: 'newspaper', tasks: 'list-todo', users: 'shield-check', reports: 'chart-no-axes-combined' }[tab.dataset.viewButton], () => showView(tab.dataset.viewButton)));
+    host.append(command(tab.textContent, { sports: 'trophy', students: 'graduation-cap', teams: 'users', matches: 'calendar-days', news: 'newspaper', users: 'shield-check', reports: 'chart-no-axes-combined' }[tab.dataset.viewButton], () => showView(tab.dataset.viewButton)));
   });
   refreshIcons(host);
 }
@@ -399,14 +403,20 @@ function renderDataTable(selector, columns, rows) {
     state.page = Math.min(state.page, pages);
     const start = (state.page - 1) * state.size;
     const visible = filtered.slice(start, start + state.size);
-    viewport.innerHTML = visible.length ? `<table><thead><tr>${columns.map(([, label]) => `<th scope="col">${escapeHtml(label)}</th>`).join('')}</tr></thead><tbody>${visible.map(row => `<tr>${columns.map(([key, , formatter, options]) => {
+    viewport.innerHTML = visible.length ? `<table><thead><tr>${columns.map(([, label]) => `<th scope="col">${escapeHtml(label)}</th>`).join('')}</tr></thead><tbody>${visible.map(row => {
+      const rank = Number.parseInt(row.rank_number, 10);
+      const rowClass = Number.isFinite(rank) && rank > 0 ? ` class="data-rank-${rank}"` : '';
+      return `<tr${rowClass}>${columns.map(([key, , formatter, options]) => {
       let value = formatter ? formatter(row[key], row) : row[key];
-      if (key === 'actions') return `<td class="action-cell">${value}</td>`;
-      if (options?.html) return `<td>${value}</td>`;
+      if (key === 'actions') return `<td class="action-cell" data-column="actions">${value}</td>`;
+      if (options?.html) return `<td data-column="${escapeAttr(key)}">${value}</td>`;
       value = workspace.labels[value] || value;
       const status = ['status', 'status_label', 'active_label'].includes(key);
-      return `<td>${status ? `<span class="status-badge ${['approved', 'published', 'completed'].includes(row.status) ? 'success' : ['rejected', 'cancelled'].includes(row.status) ? 'danger' : ''}">${escapeHtml(value ?? '-')}</span>` : escapeHtml(value ?? '-')}</td>`;
-    }).join('')}</tr>`).join('')}</tbody></table>` : emptyState(query || state.status ? 'ไม่พบรายการที่ตรงกับการค้นหา' : 'ยังไม่มีข้อมูล');
+      const statusTone = ['live', 'completed', 'scheduled', 'cancelled', 'postponed'].includes(row.status) ? row.status : '';
+      const statusClass = statusTone || (['approved', 'published'].includes(row.status) ? 'success' : ['rejected'].includes(row.status) ? 'danger' : '');
+      return `<td data-column="${escapeAttr(key)}">${status ? `<span class="status-badge status-${escapeAttr(statusClass)} ${statusClass === 'success' || statusClass === 'danger' ? statusClass : ''}">${escapeHtml(value ?? '-')}</span>` : escapeHtml(value ?? '-')}</td>`;
+    }).join('')}</tr>`;
+    }).join('')}</tbody></table>` : emptyState(query || state.status ? 'ไม่พบรายการที่ตรงกับการค้นหา' : 'ยังไม่มีข้อมูล');
     footer.replaceChildren();
     const count = document.createElement('span');
     count.setAttribute('aria-live', 'polite');
@@ -426,18 +436,105 @@ function renderDataTable(selector, columns, rows) {
   draw();
 }
 
-function openNews(row) {
-  const dialog = document.createElement('dialog');
-  dialog.className = 'article-dialog';
-  dialog.setAttribute('aria-labelledby', 'article-title');
-  dialog.innerHTML = `<header class="modal-head"><span class="badge">${escapeHtml(row.news_type_label || 'ข่าวสาร')}</span></header><article>${row.cover_image_url ? `<img class="article-cover" src="${escapeAttr(row.cover_image_url)}" alt="">` : ''}<h2 id="article-title">${escapeHtml(row.title)}</h2><p class="muted">${escapeHtml(row.published_at || row.created_at || '')}</p><div class="article-body">${escapeHtml(row.body || row.excerpt || '')}</div></article>`;
-  const close = () => { restoreToast(dialog); dialog.close(); dialog.remove(); };
-  const button = command('ปิดข่าว', 'x', close, 'icon-button');
-  button.setAttribute('aria-label', 'ปิดข่าว');
-  button.title = 'ปิดข่าว';
-  $('.modal-head', dialog).append(button);
-  document.body.append(dialog);
-  bindDialogDismiss(dialog, close);
-  refreshIcons(dialog);
-  dialog.showModal();
+function openNews(row, newsRows = []) {
+  if (!row?.id) return;
+  const url = new URL(window.location.href);
+  url.search = '';
+  url.searchParams.set('view', 'public-news-detail');
+  url.searchParams.set('id', row.id);
+  window.history.pushState({ view: 'public-news-detail', id: String(row.id) }, '', url);
+  showView('public-news-detail');
+}
+
+function renderArticlePage(target, row, newsRows = []) {
+  const related = newsRows.filter(item => String(item.id) !== String(row.id)).slice(0, 3);
+  const lead = String(row.excerpt || '').trim();
+  const body = String(row.body || row.excerpt || '').trim();
+  target.innerHTML = `
+    <header class="article-reader-bar">
+      <div class="article-reader-brand"><span>SPORT TOURNAMENT</span><strong>ข่าวกีฬา</strong></div>
+      <span class="article-reader-section">${escapeHtml(row.news_type_label || 'ข่าวสาร')}</span>
+      <div class="article-reader-actions">
+        <button type="button" class="btn ghost article-copy-link">${icon('link')}<span>คัดลอกลิงก์</span></button>
+        <button type="button" class="btn icon-button article-close" aria-label="กลับหน้าข่าว" title="กลับหน้าข่าว">${icon('x')}</button>
+      </div>
+    </header>
+    <article class="article-reader">
+      <button type="button" class="article-back">${icon('arrow-left')}<span>กลับหน้าข่าวทั้งหมด</span></button>
+      <header class="article-heading">
+        <span class="article-kicker">${escapeHtml(row.news_type_label || 'ข่าวประชาสัมพันธ์')}</span>
+        <h1 id="article-title">${escapeHtml(row.title || '')}</h1>
+        ${lead && lead !== body ? `<p class="article-lead">${escapeHtml(lead)}</p>` : ''}
+        <div class="article-publish-meta">
+          <span>เผยแพร่โดย ฝ่ายประชาสัมพันธ์กีฬา</span>
+          <time>${escapeHtml(formatArticleDate(row.published_at || row.created_at || ''))}</time>
+        </div>
+      </header>
+      ${row.cover_image_url ? `<figure class="article-hero"><img src="${escapeAttr(row.cover_image_url)}" alt="ภาพประกอบ ${escapeAttr(row.title || '')}" onerror="this.closest('figure').remove()"><figcaption>ภาพประกอบข่าวประชาสัมพันธ์การแข่งขัน</figcaption></figure>` : ''}
+      <div class="article-content-layout">
+        <aside class="article-context" aria-label="ข้อมูลข่าว">
+          <span>หมวดข่าว</span><strong>${escapeHtml(row.news_type_label || 'ข่าวสาร')}</strong>
+          ${row.department_name ? `<span>หน่วยงาน</span><strong>${escapeHtml(row.department_name)}</strong>` : ''}
+        </aside>
+        <div class="article-body">${formatArticleBody(body)}</div>
+        ${related.length ? `<aside class="article-related" aria-label="ข่าวที่เกี่ยวข้อง"><h2>ข่าวที่เกี่ยวข้อง</h2>${related.map(item => `
+          <button type="button" class="article-related-card" data-related-news="${escapeAttr(item.id)}">
+            <span>${escapeHtml(item.news_type_label || 'ข่าวสาร')}</span>
+            <strong>${escapeHtml(item.title || '')}</strong>
+            <small>${escapeHtml(formatArticleDate(item.published_at || item.created_at || ''))}</small>
+          </button>`).join('')}</aside>` : ''}
+      </div>
+      <footer class="article-footer-actions">
+        ${row.source_url ? `<a class="btn primary article-source-link" href="${escapeAttr(row.source_url)}" target="_blank" rel="noopener noreferrer">${icon('external-link')}<span>เปิดเว็บไซต์ที่เกี่ยวข้อง</span></a>` : ''}
+        <button type="button" class="btn article-copy-link">${icon('link')}<span>คัดลอกลิงก์ข่าว</span></button>
+      </footer>
+    </article>`;
+  const back = () => {
+    const url = new URL(window.location.href);
+    url.search = '';
+    url.searchParams.set('view', 'public-news');
+    window.history.pushState({ view: 'public-news' }, '', url);
+    showView('public-news');
+  };
+  $$('.article-back, .article-close', target).forEach(button => button.addEventListener('click', back));
+  $$('.article-copy-link', target).forEach(button => button.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      toast('คัดลอกลิงก์ข่าวแล้ว');
+    } catch (error) {
+      toast('ไม่สามารถคัดลอกลิงก์ได้ กรุณาคัดลอกจากแถบที่อยู่', true);
+    }
+  }));
+  $$('.article-related-card', target).forEach(card => card.addEventListener('click', () => {
+    const next = newsRows.find(item => String(item.id) === String(card.dataset.relatedNews));
+    if (!next) return;
+    openNews(next, newsRows);
+  }));
+  refreshIcons(target);
+}
+
+function renderArticleNotFound(target) {
+  target.innerHTML = `<div class="article-empty">${icon('newspaper')}<h1>ไม่พบข่าวที่ต้องการ</h1><p>ข่าวนี้อาจถูกย้าย ยกเลิกเผยแพร่ หรือลิงก์ไม่ถูกต้อง</p><button type="button" class="btn primary">กลับหน้าข่าวทั้งหมด</button></div>`;
+  $('button', target).addEventListener('click', () => {
+    const url = new URL(window.location.href);
+    url.search = '';
+    url.searchParams.set('view', 'public-news');
+    window.history.replaceState({ view: 'public-news' }, '', url);
+    showView('public-news');
+  });
+  refreshIcons(target);
+}
+
+function formatArticleBody(value) {
+  const paragraphs = String(value || '').split(/\n\s*\n/).map(part => part.trim()).filter(Boolean);
+  return paragraphs.length
+    ? paragraphs.map(paragraph => `<p>${escapeHtml(paragraph).replace(/\n/g, '<br>')}</p>`).join('')
+    : '<p>ยังไม่มีรายละเอียดข่าว</p>';
+}
+
+function formatArticleDate(value) {
+  if (!value) return 'ยังไม่ระบุเวลาเผยแพร่';
+  const date = new Date(String(value).replace(' ', 'T'));
+  if (Number.isNaN(date.getTime())) return String(value);
+  return new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeStyle: 'short' }).format(date);
 }

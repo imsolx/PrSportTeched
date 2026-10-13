@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">ลูกเซปักตะกร้อ</title>
+  <circle cx="32" cy="32" r="27" fill="#eaf3ff" stroke="#0b4f9c" stroke-width="4"/>
+  <path d="M19 13c8 5 12 12 13 20M45 13c-8 5-12 12-13 20M10 28c9-2 16 0 22 5M54 28c-9-2-16 0-22 5M17 51c1-9 6-15 15-18M47 51c-1-9-6-15-15-18" fill="none" stroke="#0b4f9c" stroke-width="4" stroke-linecap="round"/>
+  <path d="m32 18 9 8-3 12H26l-3-12z" fill="#f8c21a" stroke="#0b4f9c" stroke-width="3" stroke-linejoin="round"/>
+</svg>

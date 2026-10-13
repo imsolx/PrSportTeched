@@ -1,3 +1,9 @@
+FROM node:22-alpine AS frontend-assets
+
+WORKDIR /build
+COPY package.json package-lock.json ./
+RUN npm ci
+
 FROM php:8.3-apache
 
 RUN apt-get update \
@@ -9,6 +15,7 @@ RUN apt-get update \
 WORKDIR /var/www/html
 
 COPY . /var/www/html
+COPY --from=frontend-assets /build/node_modules/html2pdf.js/dist/html2pdf.bundle.min.js /var/www/html/public/assets/html2pdf.bundle.min.js
 
 RUN mkdir -p storage/sessions public/uploads public/reports \
     && chown -R www-data:www-data storage public/uploads public/reports \

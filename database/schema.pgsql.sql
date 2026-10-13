@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY,
   email TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
-  role TEXT NOT NULL DEFAULT 'viewer',
+  role TEXT NOT NULL DEFAULT 'registration_officer',
   department_code TEXT,
   sport_ids TEXT,
   password_hash TEXT,
@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS user_invites (
   token_hash TEXT NOT NULL UNIQUE,
   email TEXT NOT NULL,
   name TEXT,
-  role TEXT NOT NULL DEFAULT 'viewer',
+  role TEXT NOT NULL DEFAULT 'registration_officer',
   department_code TEXT,
   sport_ids TEXT,
   invited_by TEXT,
@@ -209,6 +209,7 @@ CREATE TABLE IF NOT EXISTS news (
   excerpt TEXT,
   body TEXT,
   cover_image_url TEXT,
+  source_url TEXT,
   news_type TEXT NOT NULL DEFAULT 'general',
   department_code TEXT,
   status TEXT NOT NULL DEFAULT 'draft',
@@ -336,23 +337,6 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   created_at TEXT
 );
 
-CREATE TABLE IF NOT EXISTS tasks (
-  id INTEGER PRIMARY KEY,
-  title TEXT NOT NULL,
-  description TEXT,
-  category TEXT NOT NULL DEFAULT 'general',
-  priority TEXT NOT NULL DEFAULT 'normal',
-  status TEXT NOT NULL DEFAULT 'todo',
-  due_at TEXT,
-  related_type TEXT,
-  related_id TEXT,
-  assignee_email TEXT,
-  created_by TEXT,
-  completed_at TEXT,
-  created_at TEXT,
-  updated_at TEXT
-);
-
 CREATE TABLE IF NOT EXISTS report_categories (
   id INTEGER PRIMARY KEY,
   code TEXT NOT NULL UNIQUE,
@@ -456,8 +440,6 @@ CREATE INDEX IF NOT EXISTS idx_rule_versions_sport ON sport_rule_versions(sport_
 CREATE INDEX IF NOT EXISTS idx_teams_sport ON teams(sport_id);
 CREATE INDEX IF NOT EXISTS idx_news_status_type ON news(status, news_type);
 CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_logs(created_at);
-CREATE INDEX IF NOT EXISTS idx_tasks_status_due ON tasks(status, due_at);
-CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee_email);
 CREATE INDEX IF NOT EXISTS idx_user_invites_status_expires ON user_invites(status, expires_at);
 CREATE INDEX IF NOT EXISTS idx_report_templates_category ON report_templates(category_id);
 CREATE INDEX IF NOT EXISTS idx_reports_status_year ON reports(status, academic_year);

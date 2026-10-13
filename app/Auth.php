@@ -9,7 +9,6 @@ final class Auth
     public const ROLE_REGISTRATION_OFFICER = 'registration_officer';
     public const ROLE_RESULT_OFFICER = 'result_officer';
     public const ROLE_PUBLIC_RELATIONS = 'public_relations';
-    public const ROLE_VIEWER = 'viewer';
     public const ROLE_GUEST = 'guest';
 
     public static function csrfToken(): string
@@ -30,7 +29,7 @@ final class Auth
         $stmt = Database::pdo()->prepare('SELECT * FROM users WHERE id = :id LIMIT 1');
         $stmt->execute([':id' => $id]);
         $user = $stmt->fetch();
-        if (!$user || !self::truthy($user['is_active'] ?? false)) {
+        if (!$user || !self::truthy($user['is_active'] ?? false) || !self::isSupportedRole((string) ($user['role'] ?? ''))) {
             unset($_SESSION['user_id']);
             return self::guest();
         }
@@ -53,19 +52,21 @@ final class Auth
         $stmt->execute([':email' => $email]);
         $user = $stmt->fetch();
         if (!$user || !self::truthy($user['is_active'] ?? false)) {
+            AppService::audit('login_failed', 'users', '', ['email' => $email, 'reason' => 'inactive_or_missing']);
             throw new RuntimeException('ไม่พบบัญชีผู้ดูแลที่เปิดใช้งาน');
+        }
+        if (!self::isSupportedRole((string) ($user['role'] ?? ''))) {
+            AppService::audit('login_failed', 'users', (string) $user['id'], ['email' => $email, 'reason' => 'unsupported_role']);
+            throw new RuntimeException('บทบาทของบัญชีนี้ถูกยกเลิกแล้ว กรุณาติดต่อผู้ดูแลระบบ');
         }
 
         if (empty($user['password_hash'])) {
-            self::validatePasswordStrength($password);
-            $hash = password_hash($password, PASSWORD_DEFAULT);
-            $now = Database::now();
-            $update = Database::pdo()->prepare('UPDATE users SET password_hash = :hash, password_updated_at = :now, updated_at = :now WHERE id = :id');
-            $update->execute([':hash' => $hash, ':now' => $now, ':id' => $user['id']]);
-            $user['password_hash'] = $hash;
+            AppService::audit('login_failed', 'users', (string) $user['id'], ['email' => $email, 'reason' => 'password_not_set']);
+            throw new RuntimeException('บัญชีนี้ยังไม่ได้ตั้งรหัสผ่าน กรุณาใช้ลิงก์คำเชิญ');
         }
 
         if (!password_verify($password, (string) $user['password_hash'])) {
+            AppService::audit('login_failed', 'users', (string) $user['id'], ['email' => $email, 'reason' => 'invalid_password']);
             throw new RuntimeException('รหัสผ่านไม่ถูกต้อง');
         }
 
@@ -81,6 +82,10 @@ final class Auth
 
     public static function logout(): array
     {
+        $user = self::currentUser();
+        if (!empty($user['email'])) {
+            AppService::audit('logout', 'users', (string) ($user['id'] ?? ''), ['email' => $user['email']]);
+        }
         unset($_SESSION['user_id']);
         session_regenerate_id(true);
         return ['user' => self::guest(), 'csrf' => self::csrfToken()];
@@ -97,7 +102,7 @@ final class Auth
 
     public static function canManageUsers(): array
     {
-        return self::requireRole([self::ROLE_SUPER_ADMIN, self::ROLE_ADMIN]);
+        return self::requireRole([self::ROLE_SUPER_ADMIN]);
     }
 
     public static function canManageMasterData(): array
@@ -115,6 +120,23 @@ final class Auth
         return self::requireRole([self::ROLE_SUPER_ADMIN, self::ROLE_ADMIN, self::ROLE_SPORT_HEAD]);
     }
 
+    public static function canManageTournaments(): array
+    {
+        return self::requireRole([self::ROLE_SUPER_ADMIN, self::ROLE_ADMIN]);
+    }
+
+    public static function assertSportScope(string $sportId): void
+    {
+        $user = self::currentUser();
+        if (($user['role'] ?? '') !== self::ROLE_SPORT_HEAD) {
+            return;
+        }
+        $ids = array_values(array_filter(array_map('trim', explode(',', (string) ($user['sport_ids'] ?? '')))));
+        if ($sportId === '' || !in_array($sportId, $ids, true)) {
+            throw new RuntimeException('กีฬานี้ไม่ได้อยู่ในความรับผิดชอบของคุณ');
+        }
+    }
+
     public static function canViewSportsWork(): array
     {
         return self::requireRole([
@@ -128,7 +150,7 @@ final class Auth
 
     public static function canManageResults(): array
     {
-        return self::requireRole([self::ROLE_SUPER_ADMIN, self::ROLE_ADMIN, self::ROLE_SPORT_HEAD, self::ROLE_RESULT_OFFICER]);
+        return self::requireRole([self::ROLE_SUPER_ADMIN, self::ROLE_ADMIN, self::ROLE_RESULT_OFFICER]);
     }
 
     public static function canManageNews(): array
@@ -145,7 +167,6 @@ final class Auth
             self::ROLE_REGISTRATION_OFFICER,
             self::ROLE_RESULT_OFFICER,
             self::ROLE_PUBLIC_RELATIONS,
-            self::ROLE_VIEWER,
         ]);
     }
 
@@ -169,14 +190,18 @@ final class Auth
     public static function roleOptions(): array
     {
         return [
-            ['value' => self::ROLE_SUPER_ADMIN, 'label' => 'Super Admin'],
-            ['value' => self::ROLE_ADMIN, 'label' => 'Admin / เจ้าหน้าที่กลาง'],
-            ['value' => self::ROLE_SPORT_HEAD, 'label' => 'หัวหน้ากีฬา'],
+            ['value' => self::ROLE_SUPER_ADMIN, 'label' => 'System Admin'],
+            ['value' => self::ROLE_ADMIN, 'label' => 'Operation Admin'],
+            ['value' => self::ROLE_SPORT_HEAD, 'label' => 'Sport Manager'],
             ['value' => self::ROLE_REGISTRATION_OFFICER, 'label' => 'ฝ่ายทะเบียนนักกีฬา'],
-            ['value' => self::ROLE_RESULT_OFFICER, 'label' => 'กรรมการบันทึกผล'],
+            ['value' => self::ROLE_RESULT_OFFICER, 'label' => 'Match Official'],
             ['value' => self::ROLE_PUBLIC_RELATIONS, 'label' => 'ฝ่ายประชาสัมพันธ์'],
-            ['value' => self::ROLE_VIEWER, 'label' => 'ผู้บริหาร / ผู้ดูข้อมูล'],
         ];
+    }
+
+    public static function isSupportedRole(string $role): bool
+    {
+        return in_array($role, array_column(self::roleOptions(), 'value'), true);
     }
 
     public static function validatePasswordStrength(string $password): void

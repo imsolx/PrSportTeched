@@ -225,8 +225,6 @@ final class Database
             ['teams', 'idx_teams_sport', 'sport_id'],
             ['news', 'idx_news_status_type', 'status, news_type'],
             ['audit_logs', 'idx_audit_created_at', 'created_at'],
-            ['tasks', 'idx_tasks_status_due', 'status, due_at'],
-            ['tasks', 'idx_tasks_assignee', 'assignee_email'],
             ['user_invites', 'idx_user_invites_status_expires', 'status, expires_at'],
             ['report_templates', 'idx_report_templates_category', 'category_id'],
             ['reports', 'idx_reports_status_year', 'status, academic_year'],
@@ -278,6 +276,9 @@ final class Database
                 'clock_seconds' => 'INTEGER NOT NULL DEFAULT 0',
                 'clock_status' => "VARCHAR(30) NOT NULL DEFAULT 'stopped'",
                 'overtime_count' => 'INTEGER NOT NULL DEFAULT 0',
+            ],
+            'news' => [
+                'source_url' => 'TEXT',
             ],
         ];
 
@@ -336,11 +337,16 @@ final class Database
         $driver = $pdo->getAttribute(PDO::ATTR_DRIVER_NAME);
         $insert = $driver === 'mysql' ? 'INSERT IGNORE' : ($driver === 'pgsql' ? 'INSERT' : 'INSERT OR IGNORE');
         $onConflict = $driver === 'pgsql' ? ' ON CONFLICT DO NOTHING' : '';
+        // Legacy schemas require an affiliation code. This neutral record lets
+        // independent teams and athletes use the same database without a faculty.
+        $pdo->exec("{$insert} INTO departments (id, code, name, faculty_id, logo_url, is_active)
+                    VALUES (999999, 'OPEN', 'ทั่วไป', NULL, NULL, 1){$onConflict}");
         $pdo->exec("{$insert} INTO universities (id, code, name, logo_url, is_active, created_at, updated_at)
                     VALUES (1, 'RMUTT', 'มหาวิทยาลัยเทคโนโลยีราชมงคลธัญบุรี', 'public/assets/logo.png', 1, '{$now}', '{$now}'){$onConflict}");
         $pdo->exec("{$insert} INTO faculties (id, university_id, code, name, logo_url, is_active, created_at, updated_at)
                     VALUES (1, 1, '102', 'คณะครุศาสตร์อุตสาหกรรม', 'public/assets/logo.png', 1, '{$now}', '{$now}'){$onConflict}");
-        $pdo->exec('UPDATE departments SET faculty_id = 1 WHERE faculty_id IS NULL');
+        $pdo->exec("UPDATE departments SET faculty_id = 1 WHERE faculty_id IS NULL AND code <> 'OPEN'");
+        $pdo->exec("UPDATE departments SET faculty_id = NULL WHERE code = 'OPEN'");
         $pdo->exec('UPDATE teams SET sport_id = (SELECT sport_id FROM tournaments WHERE tournaments.id = teams.tournament_id) WHERE sport_id IS NULL');
         $pdo->exec('UPDATE matches SET sport_id = COALESCE((SELECT sport_id FROM teams WHERE teams.id = matches.team1_id), (SELECT sport_id FROM tournaments WHERE tournaments.id = matches.tournament_id)) WHERE sport_id IS NULL');
 
@@ -371,12 +377,12 @@ final class Database
                 ':tie_break_rules' => json_encode(['method' => 'draw'], JSON_UNESCAPED_UNICODE),
                 ':ranking_rules' => json_encode(['win_points' => 3, 'draw_points' => 1, 'loss_points' => 0, 'order' => ['points', 'score_difference', 'scored']], JSON_UNESCAPED_UNICODE),
                 ':event_types' => json_encode([
-                    ['code' => 'score', 'label' => 'ทำคะแนน', 'points' => 1],
-                    ['code' => 'foul', 'label' => 'ฟาวล์', 'points' => 0],
-                    ['code' => 'yellow_card', 'label' => 'ใบเหลือง', 'points' => 0],
-                    ['code' => 'red_card', 'label' => 'ใบแดง', 'points' => 0],
-                    ['code' => 'substitution', 'label' => 'เปลี่ยนตัว', 'points' => 0],
-                    ['code' => 'note', 'label' => 'เหตุการณ์อื่น', 'points' => 0],
+                    ['code' => 'score', 'label' => 'ทำคะแนน', 'points' => 1, 'participant' => 'athlete'],
+                    ['code' => 'foul', 'label' => 'ฟาวล์', 'points' => 0, 'participant' => 'athlete'],
+                    ['code' => 'yellow_card', 'label' => 'ใบเหลือง', 'points' => 0, 'participant' => 'athlete'],
+                    ['code' => 'red_card', 'label' => 'ใบแดง', 'points' => 0, 'participant' => 'athlete'],
+                    ['code' => 'substitution', 'label' => 'เปลี่ยนตัว', 'points' => 0, 'participant' => 'athlete'],
+                    ['code' => 'note', 'label' => 'เหตุการณ์อื่น', 'points' => 0, 'participant' => 'optional'],
                 ], JSON_UNESCAPED_UNICODE),
                 ':custom_rules' => json_encode(['legacy_note' => (string) ($sport['rules'] ?? '')], JSON_UNESCAPED_UNICODE),
                 ':created_by' => 'migration',

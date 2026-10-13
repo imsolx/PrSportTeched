@@ -14,8 +14,6 @@ const app = {
   news: [],
   users: [],
   invites: [],
-  tasks: [],
-  taskAssignees: [],
   reports: [],
   sportRules: [],
   organizations: null,
@@ -28,12 +26,66 @@ const app = {
   allowedViews: [],
   workflow: { tournamentId: '', step: 1, data: null },
 };
+const baseDocumentTitle = document.title;
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
+const sportIconOptions = [
+  ['football', 'ฟุตบอล'], ['futsal', 'ฟุตซอล'], ['volleyball', 'วอลเลย์บอล'], ['basketball', 'บาสเกตบอล'],
+  ['badminton', 'แบดมินตัน'], ['table-tennis', 'ปิงปอง'], ['tennis', 'เทนนิส'],
+  ['running', 'กรีฑา'], ['swimming', 'ว่ายน้ำ'], ['sepak-takraw', 'เซปักตะกร้อ'],
+  ['petanque', 'เปตอง'], ['esports', 'อีสปอร์ต'], ['general', 'ทั่วไป'],
+];
+const sportIconAliases = {
+  futsal: 'futsal', goal: 'football', soccer: 'football',
+  athletics: 'running', jogging: 'running', sprint: 'running',
+  pingpong: 'table-tennis', 'table_tennis': 'table-tennis', tabletennis: 'table-tennis',
+  takraw: 'sepak-takraw', 'sepak_takraw': 'sepak-takraw',
+  petanque: 'petanque', 'pétanque': 'petanque',
+};
+const sportIconNameRules = [
+  ['sepak-takraw', ['เซปักตะกร้อ', 'ตะกร้อ', 'sepak takraw', 'takraw']],
+  ['table-tennis', ['เทเบิลเทนนิส', 'ปิงปอง', 'table tennis', 'ping pong', 'pingpong']],
+  ['badminton', ['แบดมินตัน', 'badminton']],
+  ['volleyball', ['วอลเลย์บอล', 'volleyball']],
+  ['basketball', ['บาสเกตบอล', 'basketball']],
+  ['petanque', ['เปตอง', 'petanque', 'pétanque']],
+  ['swimming', ['ว่ายน้ำ', 'swimming']],
+  ['running', ['วิ่ง', 'กรีฑา', 'running', 'athletics', 'sprint']],
+  ['esports', ['อีสปอร์ต', 'กีฬาอิเล็กทรอนิกส์', 'esport', 'e-sport']],
+  ['tennis', ['เทนนิส', 'tennis']],
+  ['futsal', ['ฟุตซอล', 'futsal']],
+  ['football', ['ฟุตบอล', 'football', 'soccer']],
+];
+const flaticonSportFiles = {
+  futsal: 'futsal.png',
+  football: 'football.png',
+  volleyball: 'volleyball.png',
+  basketball: 'basketball.png',
+  badminton: 'badminton.png',
+  'table-tennis': 'table-tennis.png',
+  running: 'running.png',
+  'sepak-takraw': 'sepak-takraw.png',
+  petanque: 'petanque.png',
+};
+const sportIconFile = key => flaticonSportFiles[key] || `${key}.svg`;
+const sportIconAsset = (value, sportName = '') => {
+  const rawKey = String(value || '').trim().toLowerCase();
+  const directKey = sportIconAliases[rawKey] || rawKey;
+  const validKeys = new Set(sportIconOptions.map(([id]) => id));
+  const searchText = `${sportName} ${value}`.trim().toLocaleLowerCase('th');
+  const inferredKey = sportIconNameRules.find(([, terms]) => terms.some(term => searchText.includes(term)))?.[0];
+  if (inferredKey) return `public/assets/sports/${sportIconFile(inferredKey)}`;
+  if (validKeys.has(directKey) && directKey !== 'general') return `public/assets/sports/${sportIconFile(directKey)}`;
+
+  const key = inferredKey || (validKeys.has(directKey) ? directKey : 'general');
+  return `public/assets/sports/${sportIconFile(key)}`;
+};
+
 document.addEventListener('DOMContentLoaded', () => {
   initWorkspace();
+  bindSportIconPicker();
   initBannerStudio();
   bindNavigation();
   bindAuth();
@@ -45,14 +97,23 @@ document.addEventListener('DOMContentLoaded', () => {
     openInviteAccept(inviteToken);
   } else {
     const requestedView = new URLSearchParams(window.location.search).get('view');
-    showView(requestedView && $(`#view-${requestedView}`) ? requestedView : 'public');
+    const defaultView = app.user?.role === 'result_officer' ? 'official' : 'public';
+    showView(requestedView && $(`#view-${requestedView}`) ? requestedView : defaultView);
   }
+});
+
+window.addEventListener('popstate', () => {
+  const requestedView = new URLSearchParams(window.location.search).get('view');
+  showView(requestedView && $(`#view-${requestedView}`) ? requestedView : 'public');
 });
 
 function bindNavigation() {
   $$('[data-view-button]').forEach(button => {
     button.addEventListener('click', event => {
       event.preventDefault();
+      if (button.dataset.viewButton === 'public-standings' && button.closest('#view-public-results')) {
+        $('#public-standings-tournament-filter').value = $('#results-tournament-filter').value;
+      }
       showView(button.dataset.viewButton);
     });
   });
@@ -66,6 +127,17 @@ function bindTournamentWorkspace() {
   $('#workflow-settings-button').addEventListener('click', openWorkflowSettings);
   $('#workflow-previous-button').addEventListener('click', () => setWorkflowStep(app.workflow.step - 1));
   $('#workflow-next-button').addEventListener('click', () => setWorkflowStep(app.workflow.step + 1));
+  $('#generate-fixtures-button').addEventListener('click', async event => {
+    await runTask(event.currentTarget, async () => {
+      const result = await request('tournaments.generateFixtures', {
+        tournament_id: app.workflow.tournamentId,
+        sport_id: $('#fixture-sport-select').value,
+        group_count: $('#fixture-group-count').value,
+      });
+      await loadMatchesAdmin();
+      toast(`สร้างคู่แข่งขัน ${result.matches.length} คู่แล้ว${result.bye_team_ids?.length ? ` · ${result.bye_team_ids.length} ทีมผ่านรอบแรกอัตโนมัติ` : ''}`);
+    });
+  });
   $('#workflow-edit-sports').addEventListener('click', () => openSelectedTournamentEditor());
   $('#workflow-department-sport').addEventListener('change', renderWorkflowDepartmentOptions);
   $('#workflow-save-departments').addEventListener('click', async event => {
@@ -92,6 +164,7 @@ function setWorkflowStep(step, scroll = true) {
     const steps = String(section.dataset.workflowStep).split(/\s+/).map(Number);
     section.hidden = !steps.includes(app.workflow.step);
   });
+  if (app.user?.role === 'sport_head') $('#fixture-generator').hidden = true;
   $$('[data-workflow-step-button]').forEach(button => {
     const number = Number(button.dataset.workflowStepButton);
     button.classList.toggle('active', number === app.workflow.step);
@@ -120,15 +193,15 @@ function setWorkflowStep(step, scroll = true) {
 
 function workflowStepDetails(step) {
   return ({
-    1: { title: 'ข้อมูลทัวร์นาเมนต์', action: app.workflow.tournamentId ? 'แก้ไขข้อมูลทัวร์นาเมนต์' : 'สร้างทัวร์นาเมนต์', description: 'กำหนดชื่อ ปีการศึกษา รูปแบบการแข่งขัน และสถานะของรายการ', hint: 'เริ่มจากสร้างทัวร์นาเมนต์และบันทึกข้อมูลหลัก' },
-    2: { title: 'เลือกกีฬาที่จัด', action: 'เลือกและแก้ไขกีฬา', description: 'เลือกกีฬาทั้งหมดที่จะจัดในทัวร์นาเมนต์นี้', hint: 'ต้องเลือกกีฬาอย่างน้อย 1 รายการก่อนตั้งค่ากติกา' },
-    3: { title: 'ตั้งกติกาแต่ละกีฬา', action: 'ตั้งค่ากติกา', description: 'กำหนดชุดกติกาและยืนยันความพร้อมแยกเป็นรายกีฬา', hint: 'ตั้งค่ากติกาของกีฬาแต่ละรายการให้เป็นพร้อมใช้งาน' },
-    4: { title: 'กำหนดสาขาที่เข้าร่วม', action: 'เลือกสาขา', description: 'ระบุสาขาที่ส่งทีมเข้าร่วม โดยเลือกแยกตามชนิดกีฬา', hint: 'เลือกกีฬา แล้วบันทึกสาขาที่เข้าร่วมให้ครบ' },
-    5: { title: 'นำเข้ารายชื่อนักศึกษา', action: 'เริ่มนำเข้ารายชื่อ', description: 'เตรียมข้อมูลนักศึกษาที่จะนำไปจัดเป็นสมาชิกของแต่ละทีม', hint: 'เพิ่มรายชื่อนักศึกษาหรือนำเข้าจากไฟล์ CSV' },
-    6: { title: 'สร้างทีมแข่งขัน', action: 'สร้างทีมใหม่', description: 'สร้างทีมให้ตรงกับกีฬาและสาขาที่กำหนดไว้', hint: 'เพิ่มทีมอย่างน้อย 1 ทีมในทัวร์นาเมนต์นี้' },
-    7: { title: 'จัดสมาชิกเข้าทีม', action: 'เพิ่มสมาชิกใหม่', description: 'เลือกนักศึกษา บทบาท และหมายเลขเสื้อให้สมาชิกแต่ละทีม', hint: 'เพิ่มสมาชิกให้ทีมที่สร้างไว้ก่อนตรวจความพร้อม' },
-    8: { title: 'ตรวจสอบความพร้อม', action: 'ตรวจรายการที่ยังขาด', description: 'ตรวจว่ากติกา สาขา ทีม และสมาชิกพร้อมสำหรับทุกกีฬา', hint: 'แก้รายการสีส้มให้ครบก่อนสร้างตารางแข่งขัน' },
-    9: { title: 'สร้างตารางแข่งขัน', action: 'สร้างแมตช์ใหม่', description: 'กำหนดคู่แข่งขัน รอบ วันเวลา สนาม และผู้ตัดสิน', hint: 'สร้างแมตช์ตามรูปแบบการแข่งขันที่กำหนด' },
+    1: { title: 'ข้อมูลทัวร์นาเมนต์', action: app.workflow.tournamentId ? 'แก้ไขข้อมูลทัวร์นาเมนต์' : 'สร้างทัวร์นาเมนต์', description: 'กำหนดชื่อ วันเริ่ม วันสิ้นสุด รูปแบบการแข่งขัน และสถานะ', hint: 'เริ่มจากสร้างทัวร์นาเมนต์และบันทึกข้อมูลหลัก' },
+    2: { title: 'กีฬาที่จัดในทัวร์นาเมนต์', action: 'แก้ไขรายการกีฬา', description: 'เลือกกีฬาจากข้อมูลกีฬากลางเพียงจุดเดียว แล้วใช้รายการเดียวกันตลอดทั้งระบบ', hint: 'ต้องเลือกกีฬาอย่างน้อย 1 รายการก่อนกำหนดชุดกติกา' },
+    3: { title: 'กำหนดชุดกติกาที่ใช้', action: 'เลือกชุดกติกา', description: 'เลือกชุดกติกากลางของกีฬาแต่ละรายการ โดยไม่ต้องสร้างกติกาซ้ำในทัวร์นาเมนต์', hint: 'ยืนยันชุดกติกาของกีฬาแต่ละรายการให้พร้อมใช้งาน' },
+    4: { title: 'สังกัดที่เข้าร่วม (ถ้ามี)', action: 'เลือกสังกัด', description: 'กำหนดสังกัดเฉพาะงานที่ต้องใช้ข้อมูลนี้', hint: 'ข้ามขั้นนี้ได้สำหรับทัวร์นาเมนต์ทั่วไป' },
+    5: { title: 'เพิ่มรายชื่อนักกีฬา', action: 'เพิ่มนักกีฬา', description: 'เตรียมรายชื่อนักกีฬาที่จะเพิ่มเข้าทีม', hint: 'เพิ่มรายชื่อหรือนำเข้าจากไฟล์ CSV' },
+    6: { title: 'สร้างทีมแข่งขัน', action: 'สร้างทีมใหม่', description: 'สร้างทีมในกีฬาและทัวร์นาเมนต์ที่เลือก', hint: 'เพิ่มทีมอย่างน้อย 1 ทีมในทัวร์นาเมนต์นี้' },
+    7: { title: 'จัดสมาชิกเข้าทีม', action: 'เพิ่มสมาชิกใหม่', description: 'เลือกนักกีฬา บทบาท และหมายเลขเสื้อให้สมาชิกแต่ละทีม', hint: 'เพิ่มสมาชิกให้ทีมที่สร้างไว้ก่อนตรวจความพร้อม' },
+    8: { title: 'ตรวจสอบความพร้อม', action: 'ตรวจรายการที่ยังขาด', description: 'ตรวจว่ากติกา ทีม และสมาชิกพร้อมสำหรับทุกกีฬา', hint: 'แก้รายการสีส้มให้ครบก่อนสร้างตารางแข่งขัน' },
+    9: { title: 'สร้างตารางแข่งขัน', action: 'สร้างแมตช์ใหม่', description: 'จัดสายอัตโนมัติหรือกำหนดคู่ รอบ วันเวลา สนาม และผู้ตัดสิน', hint: 'สร้างสายตามรูปแบบการแข่งขัน แล้วกำหนดเวลาแต่ละแมตช์' },
     10: { title: 'บันทึกผลการแข่งขัน', action: 'เปิดฟอร์มบันทึกผล', description: 'บันทึกคะแนน ผู้ชนะ เวลา และเหตุการณ์ของแต่ละแมตช์', hint: 'เลือกแมตช์ที่แข่งขันแล้วเพื่อบันทึกผล' },
     11: { title: 'จัดทำข่าวและรายงาน', action: 'จัดทำข่าว', description: 'นำผลการแข่งขันที่ยืนยันแล้วไปจัดทำข่าวและรายงานสรุป', hint: 'เลือกจัดทำข่าวประชาสัมพันธ์หรือรายงานผล' },
   })[step];
@@ -141,6 +214,15 @@ function openSelectedTournamentEditor() {
 
 function openWorkflowSettings() {
   const step = app.workflow.step;
+  const role = app.user?.role;
+  const allowed = step <= 4 ? ['super_admin', 'admin']
+    : step === 5 ? ['super_admin', 'admin', 'registration_officer']
+      : [6, 7, 9].includes(step) ? ['super_admin', 'admin', 'sport_head']
+        : step === 10 ? ['super_admin', 'admin', 'result_officer'] : [];
+  if (allowed.length && !allowed.includes(role)) {
+    toast('ไม่มีสิทธิ์แก้ไขขั้นตอนนี้', true);
+    return;
+  }
   if (step <= 2) return openSelectedTournamentEditor();
   if (step === 3) {
     const sport = app.workflow.data?.sports?.[0];
@@ -182,7 +264,8 @@ async function loadTournamentWorkspace(tournamentId = '', resetStep = false) {
   app.workflow.data = data;
   const tournament = data.tournament;
   $('#workflow-tournament-name').textContent = tournament.name;
-  $('#workflow-tournament-meta').textContent = `ปีการศึกษา ${tournament.academic_year || '-'} · ${tournament.sport_name || 'ยังไม่เลือกกีฬา'}`;
+  $('#workflow-tournament-meta').textContent = `${tournament.starts_at || 'ยังไม่กำหนดวันเริ่ม'} – ${tournament.ends_at || 'ยังไม่กำหนดวันสิ้นสุด'} · ${tournament.sport_name || 'ยังไม่เลือกกีฬา'}`;
+  setOptions($('#fixture-sport-select'), data.sports || [], row => row.id, row => row.name, 'เลือกกีฬา');
   $('#workflow-tournament-status').textContent = workspace.labels[tournament.status] || tournament.status;
   $('#workflow-notice span').textContent = `ขั้นที่แนะนำถัดไป: ${data.suggested_step} · ${$$('[data-workflow-step-button]')[data.suggested_step - 1]?.textContent.trim() || ''}`;
   $$('[data-workflow-step-button]').forEach(button => {
@@ -212,38 +295,35 @@ function renderWorkflowSports() {
   renderTable('#workflow-sports-table', [
     ['name', 'กีฬา'],
     ['type', 'ประเภท', value => workspace.labels[value] || value],
-    ['rule_name', 'กติกาที่ใช้', value => value || 'ยังไม่เลือก'],
+    ['rule_name', 'ชุดกติกาที่ใช้', (value, row) => value ? `v${row.rule_version_number} · ${value}` : 'ยังไม่เลือก'],
     ['setting_status', 'สถานะ', value => ({ pending: 'ยังตั้งค่าไม่ครบ', ready: 'พร้อมใช้งาน', locked: 'ล็อกแล้ว' }[value] || value)],
-    ['department_count', 'สาขา'],
+    ['department_count', 'สังกัด'],
     ['team_count', 'ทีม'],
-    ['actions', 'จัดการ', (_, row) => rowActions([
-      ['ตั้งค่ากติกา', () => openTournamentSportSetting(row)],
-      ['สร้างชุดกติกา', () => openNewTournamentRule(row)],
-    ])],
+    ['actions', 'จัดการ', (_, row) => ['super_admin', 'admin'].includes(app.user?.role) ? rowActions([
+      ['เลือกชุดกติกา', () => openTournamentSportSetting(row)],
+    ]) : '-'],
   ], rows);
 }
 
 function openTournamentSportSetting(sport) {
   const rules = app.sportRules.filter(row => String(row.sport_id) === String(sport.id));
-  setOptions($('#workflow-rule-version'), rules, row => row.id, row => `v${row.version_number} · ${row.name}`, 'เลือกชุดกติกา');
+  if (!rules.length) {
+    toast(`กีฬา ${sport.name} ยังไม่มีชุดกติกา กรุณาสร้างชุดกติกาในเมนูกีฬาและชุดกติกาก่อน`, true);
+    showView('sports');
+    const ruleForm = $('#sport-rule-form');
+    ruleForm.elements.sport_id.value = sport.id;
+    ruleForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
+  }
+  const activeRule = rules.find(row => Number(row.is_active));
+  setOptions($('#workflow-rule-version'), rules, row => row.id, row => `v${row.version_number} · ${row.name}${Number(row.is_active) ? ' · ชุดหลัก' : ' · เก็บประวัติ'}`, 'เลือกชุดกติกา');
   openEditor('tournament-sport-setting-form', {
     tournament_id: app.workflow.tournamentId,
     sport_id: sport.id,
     sport_name: sport.name,
-    rule_version_id: sport.rule_version_id || '',
+    rule_version_id: sport.rule_version_id || activeRule?.id || '',
     status: sport.setting_status || 'pending',
     notes: sport.setting_notes || '',
-  });
-}
-
-function openNewTournamentRule(sport) {
-  openEditor('sport-rule-form', {
-    sport_id: sport.id,
-    name: `${app.workflow.data?.tournament?.name || 'ทัวร์นาเมนต์'} · ${sport.name}`,
-    category: sport.type || '',
-    player_type: sport.type || 'team',
-    team_size: sport.max_players || 1,
-    is_active: 1,
   });
 }
 
@@ -309,7 +389,7 @@ function bindAuth() {
     form.reset();
     updateSessionUi();
     await loadAdminRefs();
-    showView('dashboard');
+    showView(app.user?.role === 'result_officer' ? 'official' : 'dashboard');
     toast('เข้าสู่ระบบแล้ว');
     });
   });
@@ -378,10 +458,6 @@ function bindForms() {
     await loadMatchesAdmin();
     await loadPublicHome();
   });
-  bindSaveForm('#task-form', 'tasks.save', async () => {
-    await loadTasksAdmin();
-    await loadDashboardCountsOnly();
-  });
   bindSaveForm('#user-form', 'users.save', loadUsersAdmin);
   $('#invite-form').addEventListener('submit', async event => {
     event.preventDefault();
@@ -394,6 +470,17 @@ function bindForms() {
       toast('สร้างลิงก์คำเชิญแล้ว');
     });
   });
+  $('#staff-invites-enabled').addEventListener('change', async event => {
+    const enabled = event.currentTarget.checked;
+    try {
+      await request('invites.toggle', { enabled });
+      toast(enabled ? 'เปิดใช้ลิงก์คำเชิญแล้ว' : 'ปิดใช้ลิงก์คำเชิญแล้ว');
+    } catch (error) {
+      event.currentTarget.checked = !enabled;
+      toast(error.message || 'บันทึกไม่สำเร็จ', true);
+    }
+  });
+  $('#audit-search').addEventListener('input', debounce(loadAuditLogs, 200));
   $('#accept-invite-form').addEventListener('submit', async event => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -404,7 +491,7 @@ function bindForms() {
       updateSessionUi();
       window.history.replaceState({}, document.title, window.location.pathname);
       await loadAdminRefs();
-      showView('dashboard');
+      showView(app.user?.role === 'result_officer' ? 'official' : 'dashboard');
       toast('ตั้งค่าบัญชีและเข้าสู่ระบบแล้ว');
     });
   });
@@ -416,7 +503,9 @@ function bindForms() {
     const data = formData(form);
     await request('matches.result', data);
     finishEditor(form);
-    await loadMatchesAdmin();
+    if (app.currentView === 'official') await loadOfficialCenter(true);
+    else await loadMatchesAdmin();
+    if (app.matchCenter && String(app.matchCenter.match.id) === String(data.match_id)) await loadMatchCenter(String(data.match_id));
     await loadPublicHome();
     toast('บันทึกผลการแข่งขันแล้ว');
     });
@@ -439,6 +528,21 @@ function bindForms() {
     await loadPublicHome();
     toast('บันทึกข่าวแล้ว');
     });
+  });
+  $('#news-template-select').addEventListener('change', event => {
+    const templates = {
+      announcement: ['ประกาศประชาสัมพันธ์', 'แจ้งรายละเอียดกิจกรรมและช่องทางติดตามการแข่งขัน', 'รายละเอียดกิจกรรม:\nวันและเวลา:\nสถานที่:\nข้อมูลเพิ่มเติม:'],
+      preview: ['เตรียมพบกับการแข่งขัน', 'เชิญติดตามรายการแข่งขันที่กำลังจะเริ่ม', 'รายการแข่งขัน:\nคู่แข่งขัน:\nวันและเวลา:\nสถานที่:\nช่องทางติดตามผล:'],
+      result: ['สรุปผลการแข่งขัน', 'ผลการแข่งขันล่าสุดและผลงานของผู้เข้าร่วม', 'รายการแข่งขัน:\nคู่แข่งขัน:\nผลการแข่งขัน:\nผู้ทำผลงานโดดเด่น:\nการแข่งขันนัดถัดไป:'],
+      honor: ['ขอแสดงความยินดีกับผู้ได้รับรางวัล', 'เชิดชูผลงานและความสำเร็จในการแข่งขัน', 'ผู้ได้รับรางวัล:\nประเภทรางวัล:\nรายการแข่งขัน:\nผลงานและความประทับใจ:'],
+    };
+    const selected = templates[event.currentTarget.value];
+    if (!selected) return;
+    const form = $('#news-form');
+    form.elements.title.value = selected[0];
+    form.elements.excerpt.value = selected[1];
+    form.elements.body.value = selected[2];
+    form.elements.news_type.value = event.currentTarget.value === 'honor' ? 'hall_of_fame' : 'general';
   });
 
   bindTaskButton('#students-csv-check', async () => {
@@ -498,15 +602,12 @@ function bindForms() {
     if (file) updateNewsCoverPreview(await fileToDataUrl(file));
   });
   $('#news-cover-url').addEventListener('input', event => updateNewsCoverPreview(event.target.value));
-  $('#report-form').addEventListener('submit', async event => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    await runForm(form, async () => {
-    syncReportAiFields();
-    const payload = collectReportPayload();
-    payload.instruction = form.elements.instruction.value || '';
-    const result = await request('reports.aiDraft', payload);
-    applyReportAiDraft(result);
+  $('#report-summary-button').addEventListener('click', async event => {
+    const button = event.currentTarget;
+    await runTask(button, async () => {
+      syncReportAiFields();
+      const result = await request('reports.summarize', collectReportPayload());
+      applyReportAiDraft(result);
     });
   });
   $('#report-create-button').addEventListener('click', () => openReportBuilder());
@@ -524,6 +625,13 @@ function bindForms() {
   $('#home-tournament-filter').addEventListener('change', event => filterPublicHome(event.target.value));
   $('#schedule-tournament-filter').addEventListener('change', event => loadPublicSchedule(event.target.value));
   $('#results-tournament-filter').addEventListener('change', event => loadPublicResults(event.target.value));
+  $('#public-standings-tournament-filter').addEventListener('change', event => loadPublicStandingsPage(event.target.value));
+  $('#bracket-tournament-filter').addEventListener('change', event => {
+    syncBracketSportOptions(event.target.value);
+    loadPublicBracket(event.target.value, '');
+  });
+  $('#bracket-sport-filter').addEventListener('change', event => loadPublicBracket($('#bracket-tournament-filter').value, event.target.value));
+  $('#news-tournament-filter').addEventListener('change', () => renderPublicNewsPage().catch(error => toast(error.message || 'โหลดข่าวไม่สำเร็จ', true)));
   $('#athlete-faculty-filter').addEventListener('change', () => {
     $('#athlete-department-filter').value = '';
     $('#athlete-sport-filter').value = '';
@@ -550,7 +658,9 @@ function bindForms() {
   $('#clock-pause').addEventListener('click', () => controlMatchClock('pause'));
   $('#clock-next').addEventListener('click', () => controlMatchClock('next_period'));
   $('#clock-overtime').addEventListener('click', () => controlMatchClock('overtime'));
+  $('#match-finish').addEventListener('click', finishMatchFromCenter);
   $('#match-event-form').addEventListener('submit', saveMatchEventFromForm);
+  $('#official-refresh').addEventListener('click', () => loadOfficialCenter(true));
   $('#tournament-sport-type').addEventListener('change', syncTournamentSportOptions);
   $('#tournament-sports-toggle').addEventListener('click', () => {
     const options = $('#tournament-sports-options');
@@ -567,7 +677,41 @@ function bindForms() {
   });
 
   $$('.reset-form').forEach(button => {
-    button.addEventListener('click', () => button.closest('form').reset());
+    button.addEventListener('click', () => {
+      const form = button.closest('form');
+      form.reset();
+      if (form.id === 'sport-form') setSportIconSelection('general');
+    });
+  });
+}
+
+function bindSportIconPicker() {
+  const form = $('#sport-form');
+  const picker = $('#sport-icon-picker');
+  if (!form || !picker) return;
+  picker.innerHTML = sportIconOptions.map(([id, label]) => `
+    <button type="button" class="sport-icon-choice" data-sport-icon="${id}" aria-pressed="false" title="${label}">
+      <img src="${sportIconAsset(id)}" alt=""><span>${label}</span>
+    </button>`).join('');
+  picker.addEventListener('click', event => {
+    const button = event.target.closest('[data-sport-icon]');
+    if (button) setSportIconSelection(button.dataset.sportIcon);
+  });
+  form.addEventListener('reset', () => queueMicrotask(() => {
+    if (!form.elements.id?.value) setSportIconSelection('general');
+  }));
+  setSportIconSelection(form.elements.icon.value || 'general');
+}
+
+function setSportIconSelection(value) {
+  const form = $('#sport-form');
+  const key = sportIconAliases[String(value || '').toLowerCase()] || String(value || '').toLowerCase();
+  const selected = sportIconOptions.some(([id]) => id === key) ? key : 'general';
+  if (form?.elements.icon) form.elements.icon.value = selected;
+  $$('#sport-icon-picker [data-sport-icon]').forEach(button => {
+    const active = button.dataset.sportIcon === selected;
+    button.classList.toggle('selected', active);
+    button.setAttribute('aria-pressed', String(active));
   });
 }
 
@@ -595,8 +739,13 @@ function bindSaveForm(selector, action, afterSave) {
       }
       if (selector === '#sport-rule-form') {
         data.event_types = String(data.event_types_text || '').split(/\r?\n/).map(line => {
-          const [code, label, points = '0'] = line.split('|').map(value => value.trim());
-          return code && label ? { code, label, points: Number(points) || 0 } : null;
+          const [code, label, points = '0', participant = 'optional'] = line.split('|').map(value => value.trim());
+          return code && label ? {
+            code,
+            label,
+            points: Number(points) || 0,
+            participant: ['athlete', 'team', 'optional'].includes(participant) ? participant : 'optional',
+          } : null;
         }).filter(Boolean);
         delete data.event_types_text;
       }
@@ -642,15 +791,27 @@ function updateSessionUi() {
   $('#login-toggle').hidden = loggedIn;
   $('#profile-toggle').hidden = !loggedIn;
   $('#logout-button').hidden = !loggedIn;
+  const canRecordResults = ['super_admin', 'admin', 'result_officer'].includes(app.user?.role);
+  $$('.result-only').forEach(element => element.hidden = !canRecordResults);
+  $$('.tournament-only').forEach(element => element.hidden = !['super_admin', 'admin'].includes(app.user?.role));
+  $$('.schedule-only').forEach(element => element.hidden = !['super_admin', 'admin', 'sport_head'].includes(app.user?.role));
+  $$('.athlete-only').forEach(element => element.hidden = !['super_admin', 'admin', 'registration_officer'].includes(app.user?.role));
+  ['workflow-save-departments', 'workflow-edit-sports'].forEach(id => {
+    const control = document.getElementById(id);
+    if (control) control.hidden = !['super_admin', 'admin'].includes(app.user?.role);
+  });
+  const clockActions = $('#match-center-content .clock-bar .actions');
+  if (clockActions) clockActions.hidden = !canRecordResults;
+  const eventForm = $('#match-event-form');
+  if (eventForm) eventForm.hidden = !canRecordResults;
 
   const roleViews = {
-    super_admin: ['dashboard', 'sports', 'students', 'matches', 'news', 'tasks', 'users', 'reports'],
-    admin: ['dashboard', 'sports', 'students', 'matches', 'news', 'tasks', 'users', 'reports'],
-    sport_head: ['dashboard', 'sports', 'matches', 'tasks', 'reports'],
-    registration_officer: ['dashboard', 'students', 'tasks', 'reports'],
-    result_officer: ['dashboard', 'matches', 'tasks', 'reports'],
-    public_relations: ['dashboard', 'news', 'tasks', 'reports'],
-    viewer: ['dashboard', 'reports'],
+    super_admin: ['dashboard', 'sports', 'students', 'matches', 'official', 'news', 'users', 'reports'],
+    admin: ['dashboard', 'sports', 'students', 'matches', 'official', 'news', 'reports'],
+    sport_head: ['dashboard', 'matches', 'reports'],
+    registration_officer: ['dashboard', 'students', 'reports'],
+    result_officer: ['official', 'reports'],
+    public_relations: ['dashboard', 'news', 'reports'],
   };
   app.allowedViews = roleViews[app.user?.role] || [];
   syncNavigationMode();
@@ -687,17 +848,36 @@ function openProfileDialog() {
 }
 
 async function showView(name) {
-  if (['dashboard', 'sports', 'students', 'teams', 'matches', 'news', 'tasks', 'users', 'reports'].includes(name) && (!app.user || app.user.role === 'guest')) {
+  const adminViews = ['dashboard', 'sports', 'students', 'teams', 'matches', 'official', 'news', 'users', 'reports'];
+  // The athlete table lives inside the tournament workflow (step 5). Keep the
+  // legacy students route useful by opening that workflow step instead of the
+  // now-empty shell view left behind after the sections are re-parented.
+  if (name === 'students' && $('#students-table')?.closest('#view-matches')) {
+    name = 'matches';
+    app.workflow.step = 5;
+  }
+  if (adminViews.includes(name) && (!app.user || app.user.role === 'guest')) {
     $('#login-dialog').showModal();
     return;
   }
+  if (adminViews.includes(name) && !app.allowedViews.includes(name) && !['teams', 'students'].includes(name)) {
+    toast('ไม่มีสิทธิ์ใช้งานส่วนนี้', true);
+    return;
+  }
+  if (name !== 'official') mountOfficialMatchCenter(false);
   $$('.tab').forEach(button => button.classList.toggle('active', button.dataset.viewButton === name));
+  const activePublicTab = document.querySelector(`body:not(.admin-mode) .tabs .tab[data-view-button="${name}"]`);
+  if (activePublicTab && innerWidth <= 600) {
+    const navigation = activePublicTab.parentElement;
+    navigation.scrollTo({ left: activePublicTab.offsetLeft - (navigation.clientWidth - activePublicTab.offsetWidth) / 2, behavior: 'smooth' });
+  }
   $$('.view').forEach(view => view.hidden = true);
   const target = $(`#view-${name}`);
   if (target) {
     target.hidden = false;
   }
   app.currentView = name;
+  if (name !== 'public-news-detail') document.title = baseDocumentTitle;
   $('#view-public-home-extra').hidden = name !== 'public';
   updateWorkspaceView(name);
   syncNavigationMode();
@@ -709,7 +889,10 @@ async function showView(name) {
     if (name === 'public-athletes') await loadPublicAthletes();
     if (name === 'public-schedule') await loadPublicSchedule($('#schedule-tournament-filter').value || '');
     if (name === 'public-results') await loadPublicResults($('#results-tournament-filter').value || '');
-    if (name === 'public-news') renderPublicNewsPage();
+    if (name === 'public-standings') await loadPublicStandingsPage($('#public-standings-tournament-filter').value || '');
+    if (name === 'public-bracket') await loadPublicBracket($('#bracket-tournament-filter').value || '', $('#bracket-sport-filter').value || '');
+    if (name === 'public-news') await renderPublicNewsPage();
+    if (name === 'public-news-detail') await renderPublicNewsDetail();
     if (name === 'dashboard') await loadDashboard();
     if (name === 'sports') await loadSportsAdmin();
     if (name === 'students') await loadStudentsAdmin();
@@ -720,8 +903,8 @@ async function showView(name) {
       if (['super_admin', 'admin', 'registration_officer'].includes(app.user?.role)) await loadStudentsAdmin();
       else renderTable('#students-table', [['notice', 'ข้อมูล', () => 'สิทธิ์ของคุณดูแลขั้นตอนอื่นในทัวร์นาเมนต์']], [{ notice: '' }]);
     }
+    if (name === 'official') await loadOfficialCenter();
     if (name === 'news') await loadNewsAdmin();
-    if (name === 'tasks') await loadTasksAdmin();
     if (name === 'users') await loadUsersAdmin();
     if (name === 'reports') await loadReportOptions();
     if (name === 'invite-accept') return;
@@ -740,12 +923,32 @@ async function loadPublicHome() {
   $('#m-results').textContent = data.summary.completedMatches;
   $('#m-news').textContent = data.summary.news;
   renderChips('#public-sports', data.sports, row => `${row.name} · ${workspace.labels[row.gender] || row.gender}`);
-  renderMatchCards('#public-schedule', data.schedule);
+  syncPublicHomeMatchFilters(data);
+  renderPublicHomeMatches(data.schedule, data.results);
   renderNewsCards('#public-news', data.news.slice(0, 3));
   renderNewsCards('#public-hall', data.hallOfFame);
   app.sports = data.sports;
   app.tournaments = data.tournaments;
   syncPublicFilters();
+  setOptions($('#home-tournament-filter'), app.tournaments, row => row.id, row => tournamentDisplayName(row.name), 'ทุกทัวร์นาเมนท์');
+  renderPublicHomeMatches(data.schedule, data.results);
+  startPublicLiveUpdates();
+}
+
+function startPublicLiveUpdates() {
+  if (app.publicLiveTimer) return;
+  app.publicLiveTimer = window.setInterval(async () => {
+    if (app.currentView !== 'public') return;
+    try {
+      const data = await request('public.home', {}, { silent: true });
+      app.publicData = data;
+      renderPublicHomeMatches(data.schedule, data.results);
+      $('#m-schedule').textContent = data.summary.scheduledMatches;
+      $('#m-results').textContent = data.summary.completedMatches;
+    } catch (error) {
+      console.warn('Live public scoreboard refresh failed', error);
+    }
+  }, 30000);
 }
 
 async function filterPublicHome(tournamentId) {
@@ -757,19 +960,237 @@ function syncPublicFilters() {
   setOptions($('#home-tournament-filter'), app.tournaments, row => row.id, row => `${row.name} (${row.sport_name || '-'})`, 'ทุกทัวร์นาเมนท์');
   setOptions($('#schedule-tournament-filter'), app.tournaments, row => row.id, row => `${row.name} (${row.sport_name || '-'})`, 'ทุกทัวร์นาเมนท์');
   setOptions($('#results-tournament-filter'), app.tournaments, row => row.id, row => `${row.name} (${row.sport_name || '-'})`, 'ทุกทัวร์นาเมนท์');
+  setOptions($('#public-standings-tournament-filter'), app.tournaments, row => row.id, row => `${row.name} (${row.sport_name || '-'})`, 'เลือกรายการแข่งขัน');
+  setOptions($('#bracket-tournament-filter'), app.tournaments, row => row.id, row => row.name, 'เลือกทัวร์นาเมนต์');
+  syncBracketSportOptions($('#bracket-tournament-filter').value);
+  setOptions($('#news-tournament-filter'), app.tournaments, row => row.id, row => row.name, 'ข่าวทุกทัวร์นาเมนต์');
+}
+
+function syncBracketSportOptions(tournamentId = '') {
+  const select = $('#bracket-sport-filter');
+  const tournament = (app.tournaments || []).find(row => String(row.id) === String(tournamentId));
+  const sportIds = new Set((tournament?.sport_ids || (tournament?.sport_id ? [tournament.sport_id] : [])).map(String));
+  const sports = (app.sports || []).filter(row => sportIds.has(String(row.id)));
+  setOptions(select, sports, row => row.id, row => row.name, 'เลือกกีฬาที่ต้องการดู');
+  select.disabled = !tournamentId || !sports.length;
+}
+
+function syncPublicHomeMatchFilters(data) {
+  const tournament = $('#home-tournament-filter');
+  const date = $('#home-date-filter');
+  const department = $('#home-department-filter');
+  if (!tournament || !date || !department) return;
+  setOptions(tournament, data.tournaments || [], row => row.id, row => tournamentDisplayName(row.name), 'ทุกทัวร์นาเมนท์');
+  const teams = new Map();
+  [...(data.schedule || []), ...(data.results || [])].forEach(row => {
+    [[row.team1_id, row.team1_name], [row.team2_id, row.team2_name]].forEach(([id, name]) => {
+      if (id) teams.set(String(id), name || id);
+    });
+  });
+  department.innerHTML = `<option value="">ทุกทีม</option>${[...teams.entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1]), 'th')).map(([id, name]) => `<option value="${escapeAttr(id)}">${escapeHtml(name)}</option>`).join('')}`;
+  if (!date.dataset.bound) {
+    [tournament, date, department].forEach(input => input.addEventListener('change', () => renderPublicHomeMatches(app.publicData.schedule, app.publicData.results)));
+    date.dataset.bound = 'true';
+  }
+}
+
+function tournamentDisplayName(name) {
+  const cleaned = String(name || '').replace(/\s*[-–—]\s*ทุกกีฬา(?:\s*\([^)]*\))?\s*$/u, '').trim();
+  return cleaned || String(name || 'ไม่ระบุทัวร์นาเมนท์');
+}
+
+function bindPublicCalendar() {
+  const input = $('#home-date-filter');
+  const trigger = $('#home-date-trigger');
+  const popover = $('#home-calendar-popover');
+  if (!input || !trigger || !popover || trigger.dataset.bound) return;
+  trigger.dataset.bound = 'true';
+  const today = new Date();
+  const todayValue = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  if (!input.value) input.value = todayValue;
+  app.homeCalendarMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+  trigger.textContent = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).format(today);
+  trigger.addEventListener('click', () => {
+    popover.hidden = !popover.hidden;
+    trigger.setAttribute('aria-expanded', String(!popover.hidden));
+    if (!popover.hidden) renderPublicCalendar();
+  });
+  document.addEventListener('click', event => {
+    if (!event.target.closest('#home-calendar-picker')) {
+      popover.hidden = true;
+      trigger.setAttribute('aria-expanded', 'false');
+    }
+  });
+  renderPublicCalendar();
+}
+
+function renderPublicCalendar() {
+  const input = $('#home-date-filter');
+  const popover = $('#home-calendar-popover');
+  const trigger = $('#home-date-trigger');
+  if (!input || !popover || !trigger) return;
+  const month = app.homeCalendarMonth || new Date();
+  const year = month.getFullYear();
+  const monthIndex = month.getMonth();
+  const monthName = new Intl.DateTimeFormat('en-US', { month: 'short', year: 'numeric' }).format(month);
+  const firstDay = (new Date(year, monthIndex, 1).getDay() + 6) % 7;
+  const days = new Date(year, monthIndex + 1, 0).getDate();
+  const selected = input.value || '';
+  const cells = [];
+  for (let i = 0; i < firstDay; i += 1) cells.push('<span class="calendar-day muted-day"></span>');
+  for (let day = 1; day <= days; day += 1) {
+    const value = `${year}-${String(monthIndex + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    cells.push(`<button type="button" class="calendar-day${value === selected ? ' selected' : ''}" data-calendar-date="${value}">${day}</button>`);
+  }
+  const monthOptions = Array.from({ length: 12 }, (_, index) => `<option value="${index}"${index === monthIndex ? ' selected' : ''}>${new Intl.DateTimeFormat('en-US', { month: 'short' }).format(new Date(2000, index, 1))}</option>`).join('');
+  const yearOptions = Array.from({ length: 11 }, (_, index) => year - 5 + index).map(value => `<option value="${value}"${value === year ? ' selected' : ''}>${value}</option>`).join('');
+  popover.innerHTML = `<div class="calendar-head"><div class="calendar-month-select"><select data-calendar-month aria-label="เลือกเดือน">${monthOptions}</select><select data-calendar-year aria-label="เลือกปี">${yearOptions}</select></div><div><button type="button" data-calendar-nav="prev" aria-label="เดือนก่อนหน้า">‹</button><button type="button" data-calendar-nav="next" aria-label="เดือนถัดไป">›</button></div></div><div class="calendar-weekdays">${['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'].map(day => `<span>${day}</span>`).join('')}</div><div class="calendar-grid">${cells.join('')}</div>`;
+  popover.querySelector('[data-calendar-month]').addEventListener('change', event => {
+    app.homeCalendarMonth = new Date(year, Number(event.target.value), 1);
+    renderPublicCalendar();
+  });
+  popover.querySelector('[data-calendar-year]').addEventListener('change', event => {
+    app.homeCalendarMonth = new Date(Number(event.target.value), monthIndex, 1);
+    renderPublicCalendar();
+  });
+  popover.querySelectorAll('[data-calendar-nav]').forEach(button => button.addEventListener('click', () => {
+    app.homeCalendarMonth = new Date(year, monthIndex + (button.dataset.calendarNav === 'next' ? 1 : -1), 1);
+    renderPublicCalendar();
+  }));
+  popover.querySelectorAll('[data-calendar-date]').forEach(button => button.addEventListener('click', () => {
+    input.value = button.dataset.calendarDate;
+    trigger.textContent = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(`${input.value}T00:00:00`));
+    popover.hidden = true;
+    trigger.setAttribute('aria-expanded', 'false');
+    renderPublicHomeMatches(app.publicData.schedule, app.publicData.results);
+  }));
+}
+
+function renderPublicHomeMatches(scheduleRows, resultRows) {
+  bindPublicCalendar();
+  const tournamentId = $('#home-tournament-filter')?.value || '';
+  const date = $('#home-date-filter')?.value || '';
+  const teamId = $('#home-department-filter')?.value || '';
+  const baseFilter = row => (!tournamentId || String(row.tournament_id) === String(tournamentId))
+    && (!teamId || [row.team1_id, row.team2_id].map(String).includes(String(teamId)));
+  const schedule = (scheduleRows || []).filter(row => baseFilter(row) && (!date || String(row.scheduled_at || '').slice(0, 10) >= date));
+  const results = (resultRows || []).filter(baseFilter);
+  renderPublicMatchList('#public-schedule', schedule, false);
+  renderPublicMatchList('#public-home-results', results, true);
+  $('#public-schedule-count').textContent = `${schedule.length} คู่`;
+  $('#public-results-count').textContent = `${results.length} คู่`;
+}
+
+function renderPublicMatchList(selector, rows, completed) {
+  const target = $(selector);
+  if (!target) return;
+  target.innerHTML = rows.length ? rows.map(row => completed ? renderCompletedMatch(row) : renderUpcomingMatch(row)).join('')
+    : emptyState(completed ? 'ยังไม่มีผลการแข่งขันตามตัวกรอง' : 'ยังไม่มีคู่แข่งขันตามตัวกรอง');
+  refreshIcons(target);
+}
+
+function renderCompletedMatch(row) {
+  const date = formatUpcomingMatchDate(row.confirmed_at || row.scheduled_at);
+  const sportAsset = row.sport_logo_url || sportIconAsset(row.sport_icon, row.sport_name);
+  const firstScore = Number(row.team1_score ?? 0);
+  const secondScore = Number(row.team2_score ?? 0);
+  const firstWon = firstScore > secondScore;
+  const secondWon = secondScore > firstScore;
+  const winner = firstWon ? row.team1_name : secondWon ? row.team2_name : 'ผลเสมอ';
+  return `<article class="public-match-row is-completed">
+    <img class="result-sport-art" src="${escapeAttr(sportAsset)}" alt="" aria-hidden="true" onerror="this.remove()">
+    <div class="result-match-head">
+      <div><span class="result-label">FULL TIME</span><strong>${escapeHtml(tournamentDisplayName(row.tournament_name))}</strong></div>
+      <span class="result-status">${icon('circle-check')} จบการแข่งขัน</span>
+    </div>
+    <div class="result-sport-name">${escapeHtml(row.sport_name || 'ไม่ระบุกีฬา')} · ${escapeHtml(row.round_name || 'รอบการแข่งขัน')}</div>
+    <div class="result-versus">
+      ${upcomingTeam(row, 1, firstWon)}
+      <div class="result-score"><strong>${escapeHtml(String(firstScore))}</strong><span>:</span><strong>${escapeHtml(String(secondScore))}</strong></div>
+      ${upcomingTeam(row, 2, secondWon)}
+    </div>
+    <div class="result-match-foot">
+      <span>${icon(firstWon || secondWon ? 'trophy' : 'handshake')} ${escapeHtml(firstWon || secondWon ? `ผู้ชนะ ${winner}` : winner)}</span>
+      <span>${icon('calendar-check')} ${escapeHtml(`${date.day} ${date.month} · ${date.time}`)}</span>
+    </div>
+  </article>`;
+}
+
+function renderUpcomingMatch(row) {
+  const date = formatUpcomingMatchDate(row.scheduled_at);
+  const sportAsset = row.sport_logo_url || sportIconAsset(row.sport_icon, row.sport_name);
+  return `<article class="public-match-row is-upcoming">
+    <img class="upcoming-sport-art" src="${escapeAttr(sportAsset)}" alt="" aria-hidden="true" onerror="this.remove()">
+    <div class="upcoming-match-head">
+      <div><span class="upcoming-label">NEXT MATCH</span><strong>${escapeHtml(tournamentDisplayName(row.tournament_name))}</strong></div>
+      <div class="upcoming-date"><b>${escapeHtml(date.day)}</b><span>${escapeHtml(date.month)}</span></div>
+    </div>
+    <div class="upcoming-sport-name">${escapeHtml(row.sport_name || 'ไม่ระบุกีฬา')} · ${escapeHtml(row.round_name || 'รอบการแข่งขัน')}</div>
+    <div class="upcoming-versus">
+      ${upcomingTeam(row, 1)}
+      <span class="upcoming-vs">VS</span>
+      ${upcomingTeam(row, 2)}
+    </div>
+    <div class="upcoming-match-foot">
+      <span>${icon('clock-3')}${escapeHtml(date.time)}</span>
+      <span>${icon('map-pin')}${escapeHtml(row.venue || 'รอประกาศสนาม')}</span>
+    </div>
+  </article>`;
+}
+
+function upcomingTeam(row, side, winner = false) {
+  const logo = row[`team${side}_logo_url`] || row[`team${side}_department_logo_url`] || '';
+  const name = row[`team${side}_name`] || `ทีม ${side}`;
+  const initial = escapeHtml(String(name).trim().charAt(0) || String(side));
+  const mark = `<span>${initial}</span>${logo ? `<img src="${escapeAttr(logo)}" alt="" onerror="this.remove()">` : ''}`;
+  return `<div class="upcoming-team${winner ? ' is-winner' : ''}"><div class="upcoming-team-mark">${mark}</div><strong>${escapeHtml(name)}</strong></div>`;
+}
+
+function formatUpcomingMatchDate(value) {
+  const date = value ? new Date(String(value).replace(' ', 'T')) : null;
+  if (!date || Number.isNaN(date.getTime())) return { day: '--', month: 'TBA', time: 'รอประกาศเวลา' };
+  return {
+    day: new Intl.DateTimeFormat('th-TH', { day: '2-digit' }).format(date),
+    month: new Intl.DateTimeFormat('th-TH', { month: 'short' }).format(date),
+    time: new Intl.DateTimeFormat('th-TH', { hour: '2-digit', minute: '2-digit' }).format(date) + ' น.',
+  };
+}
+
+function publicScoreboardTeam(row, side, completed) {
+  const logo = row[`team${side}_logo_url`] || row[`team${side}_department_logo_url`] || '';
+  const name = row[`team${side}_name`] || `ทีม ${side}`;
+  const score = completed ? String(row[`team${side}_score`] ?? 0) : '-';
+  return `<div class="scoreboard-team${logo ? ' has-logo' : ''}">
+    ${logo ? `<img src="${escapeAttr(logo)}" alt="" onerror="const team=this.parentElement;this.remove();team.classList.remove('has-logo')">` : ''}
+    <strong>${escapeHtml(name)}</strong><b>${escapeHtml(score)}</b>
+  </div>`;
 }
 
 function renderPublicSportsPage() {
-  const rows = (app.publicData && app.publicData.sports) || app.sports || [];
+  const genderSelect = $('#public-sport-gender-filter');
+  const formatSelect = $('#public-sport-format-filter');
+  if (!genderSelect.dataset.bound) {
+    [genderSelect, formatSelect].forEach(select => select.addEventListener('change', renderPublicSportsPage));
+    genderSelect.dataset.bound = 'true';
+  }
+  const gender = genderSelect.value;
+  const format = formatSelect.value;
+  const rows = ((app.publicData && app.publicData.sports) || app.sports || []).filter(row =>
+    (!gender || row.gender === gender) && (!format || sportFormatKey(row) === format));
   renderTable('#public-sports-table', [
-    ['logo_url', 'โลโก้', value => value ? 'มี' : '-'],
+    ['logo_url', 'โลโก้', (_, row) => `<img class="sport-table-logo" src="${escapeAttr(row.logo_url || sportIconAsset(row.icon, row.name))}" alt="ไอคอนกีฬา ${escapeAttr(row.name || 'กีฬา')}" onerror="this.src='${escapeAttr(sportIconAsset(row.icon, row.name))}'">`, { html: true }],
     ['name', 'กีฬา'],
     ['type', 'ประเภท'],
     ['gender', 'เพศ'],
     ['max_players', 'ผู้เล่น'],
     ['reserve_players', 'สำรอง'],
-    ['rules', 'กติกาย่อ'],
+    ['rules', 'คำอธิบายย่อ'],
   ], rows);
+}
+
+function sportFormatKey(row) {
+  if (Number(row.sport_max_players ?? row.max_players ?? 1) === 2) return 'double';
+  return String(row.sport_type ?? row.type ?? '') === 'individual' ? 'single' : 'team';
 }
 
 async function loadPublicAthletes() {
@@ -785,54 +1206,54 @@ async function loadPublicAthletes() {
 }
 
 function athleteFacultyName(board) {
-  return String(board.faculty_name || 'ไม่ระบุคณะ');
+  return String(board.tournament_name || 'ไม่ระบุทัวร์นาเมนต์');
 }
 
 function syncAthleteFacultyOptions() {
   const select = $('#athlete-faculty-filter');
   const current = select.value;
-  const rows = [...new Set((app.athleteBoards || []).map(athleteFacultyName))]
-    .sort((a, b) => a.localeCompare(b, 'th'))
-    .map(name => ({ name }));
-  setOptions(select, rows, row => row.name, row => row.name, 'เลือกคณะ');
-  if (rows.some(row => row.name === current)) select.value = current;
+  const rows = [...new Map((app.athleteBoards || []).map(board => [String(board.tournament_id), { id: String(board.tournament_id), name: athleteFacultyName(board) }])).values()]
+    .sort((a, b) => a.name.localeCompare(b.name, 'th'));
+  setOptions(select, rows, row => row.id, row => row.name, 'เลือกทัวร์นาเมนต์');
+  if (rows.some(row => row.id === current)) select.value = current;
 }
 
 function syncAthleteDepartmentOptions() {
-  const faculty = $('#athlete-faculty-filter').value;
+  const tournamentId = $('#athlete-faculty-filter').value;
   const select = $('#athlete-department-filter');
   const current = select.value;
   const seen = new Map();
-  (app.athleteBoards || []).filter(board => athleteFacultyName(board) === faculty).forEach(board => {
-    seen.set(String(board.department_code || ''), board.department_name || board.department_code || 'ไม่ระบุสาขา');
-  });
-  const rows = [...seen].map(([code, name]) => ({ code, name })).sort((a, b) => a.name.localeCompare(b.name, 'th'));
-  setOptions(select, rows, row => row.code, row => row.name, 'เลือกสาขา');
-  select.disabled = !faculty;
-  if (rows.some(row => row.code === current)) select.value = current;
-}
-
-function syncAthleteSportOptions() {
-  const faculty = $('#athlete-faculty-filter').value;
-  const department = $('#athlete-department-filter').value;
-  const select = $('#athlete-sport-filter');
-  const current = select.value;
-  const seen = new Map();
-  (app.athleteBoards || []).filter(board => athleteFacultyName(board) === faculty && String(board.department_code || '') === department).forEach(board => {
+  (app.athleteBoards || []).filter(board => String(board.tournament_id) === tournamentId).forEach(board => {
     seen.set(String(board.sport_id || ''), board.sport_name || 'ไม่ระบุกีฬา');
   });
   const rows = [...seen].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, 'th'));
   setOptions(select, rows, row => row.id, row => row.name, 'เลือกกีฬา');
-  select.disabled = !department;
+  select.disabled = !tournamentId;
+  if (rows.some(row => row.id === current)) select.value = current;
+}
+
+function syncAthleteSportOptions() {
+  const tournamentId = $('#athlete-faculty-filter').value;
+  const sportId = $('#athlete-department-filter').value;
+  const select = $('#athlete-sport-filter');
+  const current = select.value;
+  const seen = new Map();
+  (app.athleteBoards || []).filter(board => String(board.tournament_id) === tournamentId
+    && String(board.sport_id || '') === sportId).forEach(board => {
+    seen.set(String(board.team_id || ''), board.team_name || 'ไม่ระบุทีม');
+  });
+  const rows = [...seen].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, 'th'));
+  setOptions(select, rows, row => row.id, row => row.name, 'เลือกทีม');
+  select.disabled = !sportId;
   if (rows.some(row => row.id === current)) select.value = current;
 }
 
 function renderAthleteBoards() {
-  const faculty = $('#athlete-faculty-filter').value;
-  const department = $('#athlete-department-filter').value;
-  const sport = $('#athlete-sport-filter').value;
-  const ready = Boolean(faculty && department && sport);
-  const currentStep = sport ? 4 : department ? 3 : faculty ? 2 : 1;
+  const tournamentId = $('#athlete-faculty-filter').value;
+  const sportId = $('#athlete-department-filter').value;
+  const teamId = $('#athlete-sport-filter').value;
+  const ready = Boolean(tournamentId && sportId && teamId);
+  const currentStep = teamId ? 4 : sportId ? 3 : tournamentId ? 2 : 1;
   $$('[data-athlete-flow-step]').forEach(element => {
     const step = Number(element.dataset.athleteFlowStep);
     element.classList.toggle('complete', step < currentStep || (ready && step === 4));
@@ -841,15 +1262,15 @@ function renderAthleteBoards() {
   if (window.innerWidth <= 900) {
     $(`[data-athlete-flow-step="${currentStep}"]`)?.scrollIntoView({ behavior: 'auto', block: 'nearest', inline: 'center' });
   }
-  $('#athlete-department-filter').disabled = !faculty;
-  $('#athlete-sport-filter').disabled = !department;
+  $('#athlete-department-filter').disabled = !tournamentId;
+  $('#athlete-sport-filter').disabled = !sportId;
   $('#athlete-results').hidden = !ready;
-  const notice = !faculty
-    ? 'เริ่มจากเลือกคณะ เพื่อดูสาขาที่มีนักกีฬาเข้าร่วม'
-    : !department
-      ? 'เลือกสาขาในคณะที่เลือก เพื่อดูชนิดกีฬาที่มีทีมเข้าร่วม'
-      : !sport
-        ? 'เลือกกีฬา เพื่อแสดงทีมและรายชื่อนักกีฬา'
+  const notice = !tournamentId
+    ? 'เริ่มจากเลือกทัวร์นาเมนต์'
+    : !sportId
+      ? 'เลือกกีฬาที่จัดในทัวร์นาเมนต์นี้'
+      : !teamId
+        ? 'เลือกทีมเพื่อดูรายชื่อนักกีฬา'
         : 'เลือกครบแล้ว รายชื่อนักกีฬาแสดงอยู่ด้านล่าง';
   $('#athlete-flow-notice span').textContent = notice;
   $('#athlete-flow-notice').classList.toggle('complete', ready);
@@ -861,20 +1282,21 @@ function renderAthleteBoards() {
   }
   const query = ($('#athlete-team-filter').value || '').trim().toLowerCase();
   const rows = (app.athleteBoards || []).filter(row => {
-    if (athleteFacultyName(row) !== faculty || String(row.department_code || '') !== department || String(row.sport_id || '') !== sport) return false;
+    if (String(row.tournament_id) !== tournamentId || String(row.sport_id || '') !== sportId || String(row.team_id) !== teamId) return false;
     if (!query) return true;
-    return [row.team_name, row.department_name, row.sport_name, ...(row.players || []).flatMap(player => [player.full_name, player.student_code, player.field_position])]
+    return [row.team_name, row.department_name, row.sport_name, ...(row.players || []).flatMap(player => [player.full_name, player.student_code, player.field_position, player.role, player.shirt_number])]
       .join(' ').toLowerCase().includes(query);
   }).map(board => ({
     ...board,
-    players: (board.players || []).filter(player => !query || [player.full_name, player.student_code, player.field_position, board.team_name].join(' ').toLowerCase().includes(query)),
+    players: (board.players || []).filter(player => !query || [player.full_name, player.student_code, player.field_position, player.role, player.shirt_number, board.team_name].join(' ').toLowerCase().includes(query)),
   }));
   const target = $('#athlete-board-list');
-  const playerCount = rows.reduce((total, board) => total + board.players.length, 0);
-  $('#athlete-total-count').textContent = `${playerCount} นักกีฬา`;
-  const sportName = rows[0]?.sport_name || $('#athlete-sport-filter').selectedOptions[0]?.textContent || 'กีฬา';
-  const departmentName = rows[0]?.department_name || $('#athlete-department-filter').selectedOptions[0]?.textContent || 'สาขา';
-  $('#athlete-results-title').textContent = `${sportName} · ${departmentName}`;
+  const playerCount = rows.reduce((total, board) => total + board.players.filter(player => String(player.role || '').toLowerCase() !== 'coach').length, 0);
+  const coachCount = rows.reduce((total, board) => total + board.players.filter(player => String(player.role || '').toLowerCase() === 'coach').length, 0);
+  $('#athlete-total-count').textContent = `${playerCount} นักกีฬา${coachCount ? ` · ${coachCount} โค้ช` : ''}`;
+  const sportName = rows[0]?.sport_name || $('#athlete-department-filter').selectedOptions[0]?.textContent || 'กีฬา';
+  const teamName = rows[0]?.team_name || $('#athlete-sport-filter').selectedOptions[0]?.textContent || 'ทีม';
+  $('#athlete-results-title').textContent = `${sportName} · ${teamName}`;
   if (!rows.length) {
     target.innerHTML = emptyState('ไม่พบรายชื่อนักกีฬาตามคำค้นหา');
     return;
@@ -885,31 +1307,54 @@ function renderAthleteBoards() {
         <div class="athlete-squad-identity">${board.team_logo_url ? `<img src="${escapeAttr(board.team_logo_url)}" alt="โลโก้ ${escapeAttr(board.team_name || '')}">` : icon('shield')}
           <div><span>${escapeHtml(board.tournament_name || board.sport_name || '')}</span><h4>${escapeHtml(board.team_name || '-')}</h4></div>
         </div>
-        <strong>${board.players.length} ผู้เล่น</strong>
+        <strong>${board.players.filter(player => String(player.role || '').toLowerCase() !== 'coach').length} นักกีฬา${board.players.some(player => String(player.role || '').toLowerCase() === 'coach') ? ` · ${board.players.filter(player => String(player.role || '').toLowerCase() === 'coach').length} โค้ช` : ''}</strong>
       </header>
-      <div class="athlete-player-grid">${board.players.map(player => `
-        <article class="athlete-player-card">
-          <div class="athlete-player-visual">
-            ${board.team_logo_url ? `<img class="athlete-team-watermark" src="${escapeAttr(board.team_logo_url)}" alt="" aria-hidden="true">` : ''}
-            <span>${escapeHtml(player.shirt_number || '—')}</span>
-            ${player.photo_url
-              ? `<img class="athlete-profile-photo" src="${escapeAttr(player.photo_url)}" alt="รูปโปรไฟล์ ${escapeAttr(player.full_name || 'นักกีฬา')}">`
-              : `<div class="athlete-player-initials">${escapeHtml(playerInitials(player.full_name || 'นักกีฬา'))}</div>`}
-          </div>
-          <div class="athlete-player-info">
-            <small>${escapeHtml(player.field_position || player.role || 'นักกีฬา')}</small>
-            <h5>${escapeHtml(player.full_name || '-')}</h5>
-            <p>${escapeHtml(player.student_code || 'ไม่ระบุรหัสนักศึกษา')}</p>
-          </div>
-        </article>
-      `).join('') || '<p class="athlete-empty-team">ทีมนี้ยังไม่มีรายชื่อสมาชิก</p>'}</div>
+      <div class="athlete-zone-list">${athletePlayerZones(board).map(zone => `<section class="athlete-position-zone">
+        <header><div><span>${zone.kind === 'coach' ? 'ทีมงาน' : 'ตำแหน่ง'}</span><h5>${escapeHtml(zone.label)}</h5></div><strong>${zone.players.length} คน</strong></header>
+        <ol class="athlete-name-list">${zone.players.map(player => `
+          <li class="athlete-name-row">
+            ${player.shirt_number && zone.kind !== 'coach' ? `<span class="athlete-shirt-number">${escapeHtml(player.shirt_number)}</span>` : ''}
+            <strong>${escapeHtml(player.full_name || '-')}</strong>
+            ${zone.kind !== 'coach' && ['captain', 'substitute'].includes(String(player.role || '').toLowerCase()) ? `<small>${escapeHtml(athleteRoleLabel(player.role))}</small>` : ''}
+          </li>
+        `).join('')}</ol>
+      </section>`).join('') || '<p class="athlete-empty-team">ทีมนี้ยังไม่มีรายชื่อสมาชิก</p>'}</div>
     </section>
   `).join('');
   refreshIcons(target);
 }
 
-function playerInitials(name) {
-  return String(name).trim().split(/\s+/).slice(0, 2).map(part => part.charAt(0)).join('').toUpperCase() || 'TS';
+function athleteRoleLabel(role) {
+  return ({ captain: 'กัปตัน', coach: 'โค้ช', substitute: 'ตัวสำรอง', player: 'ผู้เล่น' })[String(role || '').toLowerCase()] || String(role || 'ผู้เล่น');
+}
+
+function athletePlayerZones(board) {
+  if (String(board.sport_type || '') !== 'team') {
+    const players = sortAthleteNames((board.players || []).filter(player => String(player.role || '').toLowerCase() !== 'coach'));
+    return players.length ? [{ label: 'รายชื่อนักกีฬา', kind: 'player', players }] : [];
+  }
+  const groups = new Map();
+  (board.players || []).forEach(player => {
+    const role = String(player.role || 'player').toLowerCase();
+    const kind = role === 'coach' ? 'coach' : 'player';
+    const label = kind === 'coach' ? 'โค้ช' : (String(player.field_position || '').trim() || 'ไม่ระบุตำแหน่ง');
+    const key = `${kind}:${label}`;
+    if (!groups.has(key)) groups.set(key, { label, kind, players: [] });
+    groups.get(key).players.push(player);
+  });
+  return [...groups.values()]
+    .sort((a, b) => (a.kind === 'coach' ? -1 : b.kind === 'coach' ? 1 : a.label.localeCompare(b.label, 'th')))
+    .map(group => ({ ...group, players: sortAthleteNames(group.players) }));
+}
+
+function sortAthleteNames(players) {
+  return [...players].sort((a, b) => {
+    const shirtA = Number.parseInt(a.shirt_number, 10);
+    const shirtB = Number.parseInt(b.shirt_number, 10);
+    if (Number.isFinite(shirtA) && Number.isFinite(shirtB) && shirtA !== shirtB) return shirtA - shirtB;
+    if (Number.isFinite(shirtA) !== Number.isFinite(shirtB)) return Number.isFinite(shirtA) ? -1 : 1;
+    return String(a.full_name || '').localeCompare(String(b.full_name || ''), 'th');
+  });
 }
 
 function syncStudentPhotoPreview(url = '') {
@@ -940,20 +1385,155 @@ async function loadPublicResults(tournamentId = '') {
   ], standings);
 }
 
-function renderPublicNewsPage() {
-  const rows = (app.publicData && app.publicData.news) || [];
+async function loadPublicStandingsPage(tournamentId = '') {
+  if (!tournamentId) {
+    const filter = $('#public-standings-tournament-filter');
+    tournamentId = [...filter.options].find(option => option.value)?.value || '';
+    filter.value = tournamentId;
+  }
+  const standings = await request('public.standings', { tournament_id: tournamentId });
+  renderTable('#public-standings-page-table', [
+    ['sport_name', 'กีฬา'], ['rank_number', 'อันดับ'], ['team_name', 'ทีม'],
+    ['played', 'แข่ง'], ['won', 'ชนะ'], ['drawn', 'เสมอ'], ['lost', 'แพ้'],
+    ['score_difference', '+/-'], ['points', 'คะแนน'],
+  ], standings);
+}
+
+async function loadPublicBracket(tournamentId = '', sportId = '') {
+  const target = $('#public-bracket-rounds');
+  const stageHead = $('#bracket-stage-head');
+  target.classList.remove('single-round', 'group-list-view');
+  if (!tournamentId) {
+    target.innerHTML = emptyState('เลือกทัวร์นาเมนต์เพื่อดูสายการแข่งขัน');
+    stageHead.hidden = true;
+    return;
+  }
+  if (!sportId) {
+    target.innerHTML = emptyState('เลือกกีฬาที่ต้องการดูก่อน ระบบจะแสดงสายการแข่งขันตามลำดับรอบ');
+    stageHead.hidden = true;
+    return;
+  }
+  const tournament = (app.tournaments || []).find(row => String(row.id) === String(tournamentId));
+  const sport = (app.sports || []).find(row => String(row.id) === String(sportId));
+  const rounds = await request('public.bracket', { tournament_id: tournamentId, sport_id: sportId });
+  target.classList.toggle('single-round', rounds.length === 1);
+  target.classList.toggle('group-list-view', rounds.length > 0 && rounds.every(round => bracketRoundIsTeamList(round, tournament)));
+  $('#bracket-stage-sport').textContent = sport?.name || 'กีฬา';
+  $('#bracket-stage-title').textContent = tournament?.name || 'สายการแข่งขัน';
+  stageHead.hidden = false;
+  target.innerHTML = rounds.length ? rounds.map(round => renderBracketRound(round, tournament)).join('') : emptyState('ยังไม่มีสายการแข่งขันสำหรับกีฬานี้');
+}
+
+function matchStatusClass(status) {
+  return ['scheduled', 'live', 'completed', 'cancelled', 'postponed'].includes(status) ? status : 'scheduled';
+}
+
+function renderBracketRound(round, tournament) {
+  const matches = round.matches || [];
+  const isGroupList = bracketRoundIsTeamList(round, tournament);
+  if (isGroupList) {
+    const teams = bracketRoundTeams(matches);
+    return `<section class="bracket-group team-list">
+      <header><h3>${escapeHtml(round.name)}</h3><span>${teams.length} ทีม</span></header>
+      <ol class="bracket-group-team-list">${teams.map(team => `
+        <li>${bracketTeamMark(team.name, team.logo)}<strong>${escapeHtml(team.name)}</strong></li>
+      `).join('')}</ol>
+    </section>`;
+  }
+  return `<section class="bracket-group">
+    <header><h3>${escapeHtml(round.name)}</h3><span>${matches.length} คู่</span></header>
+    <div class="bracket-group-matches">${matches.map(match => `
+      <article class="bracket-match">
+        <div class="bracket-match-meta"><span>คู่ที่ ${escapeHtml(String(match.match_number || '-'))}</span><time>${escapeHtml(formatBracketDate(match.scheduled_at))}</time></div>
+        ${bracketTeamRow(match, 1)}
+        ${bracketTeamRow(match, 2)}
+        <small class="bracket-match-status status-${matchStatusClass(match.status)}">${escapeHtml(match.status_label || '')}</small>
+      </article>
+    `).join('')}</div>
+  </section>`;
+}
+
+function bracketRoundIsTeamList(round, tournament) {
+  return String(round.name || '').startsWith('กลุ่ม') || (tournament?.format === 'round_robin' && round.name === 'พบกันหมด');
+}
+
+function bracketRoundTeams(matches) {
+  const teams = new Map();
+  matches.forEach(match => [1, 2].forEach(side => {
+    const id = match[`team${side}_id`];
+    if (!id || teams.has(String(id))) return;
+    const name = match[`team${side}_name`] || `ทีม ${side}`;
+    teams.set(String(id), {
+      name,
+      logo: match[`team${side}_logo_url`] || match[`team${side}_department_logo_url`] || '',
+      initial: String(name).trim().charAt(0).toUpperCase() || '?',
+    });
+  }));
+  return [...teams.values()].sort((a, b) => a.name.localeCompare(b.name, 'th'));
+}
+
+function bracketTeamRow(match, side) {
+  const teamId = match[`team${side}_id`];
+  const name = teamId ? (match[`team${side}_name`] || `ทีม ${side}`) : 'รอทีม';
+  const logo = match[`team${side}_logo_url`] || match[`team${side}_department_logo_url`] || '';
+  const score = match.status === 'completed' ? String(match[`team${side}_score`] ?? 0) : '-';
+  const otherScore = Number(match[`team${side === 1 ? 2 : 1}_score`] ?? 0);
+  const isWinner = match.status === 'completed' && Number(match[`team${side}_score`] ?? 0) > otherScore;
+  return `<div class="bracket-team-row team-${side}${isWinner ? ' winner' : ''}${teamId ? '' : ' pending'}">
+    ${bracketTeamMark(name, logo)}
+    <strong>${escapeHtml(name)}</strong>
+    <b>${escapeHtml(score)}</b>
+  </div>`;
+}
+
+function bracketTeamMark(name, logo = '') {
+  const initial = String(name || '').trim().charAt(0).toUpperCase() || '?';
+  return `<span class="bracket-team-mark"><span aria-hidden="true">${escapeHtml(initial)}</span>${logo ? `<img src="${escapeAttr(logo)}" alt="" onerror="this.remove()">` : ''}</span>`;
+}
+
+function formatBracketDate(value) {
+  if (!value) return 'ยังไม่กำหนดเวลา';
+  const date = new Date(String(value).replace(' ', 'T'));
+  if (Number.isNaN(date.getTime())) return String(value);
+  return new Intl.DateTimeFormat('th-TH', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
+}
+
+async function renderPublicNewsPage() {
+  const tournamentId = $('#news-tournament-filter')?.value || '';
+  const rows = await request('public.news', { tournament_id: tournamentId });
   renderNewsCards('#public-news-page', rows);
 }
 
+async function renderPublicNewsDetail() {
+  const id = new URLSearchParams(window.location.search).get('id') || '';
+  const target = $('#public-news-detail');
+  target.innerHTML = '<div class="article-loading">กำลังโหลดข่าว...</div>';
+  if (!id) {
+    renderArticleNotFound(target);
+    return;
+  }
+  const [selected, rows] = await Promise.all([
+    request('public.news', { id }),
+    request('public.news'),
+  ]);
+  const row = selected[0];
+  if (!row) {
+    renderArticleNotFound(target);
+    return;
+  }
+  document.title = `${row.title || 'ข่าวสาร'} · ${baseDocumentTitle}`;
+  renderArticlePage(target, row, rows);
+}
+
 async function loadAdminRefs() {
-  const tasks = [
+  const requests = [
     request('sports.list', {}, { silent: true }).then(rows => app.sports = rows).catch(() => {}),
     request('tournaments.list', {}, { silent: true }).then(rows => app.tournaments = rows).catch(() => {}),
     request('departments.list', {}, { silent: true }).then(rows => app.departments = rows).catch(() => {}),
     request('teams.list', { tournament_id: '' }, { silent: true }).then(rows => app.teams = rows).catch(() => {}),
     request('matches.list', { tournament_id: '' }, { silent: true }).then(rows => app.matches = rows).catch(() => {}),
   ];
-  await Promise.all(tasks);
+  await Promise.all(requests);
   syncAdminOptions();
 }
 
@@ -1016,11 +1596,22 @@ function syncMatchTeamOptions() {
 
 function syncResultWinnerOptions() {
   const match = app.matches.find(row => String(row.id) === String($('#result-match-select').value));
+  const rule = match ? app.sportRules.find(row => String(row.id) === String(match.rule_version_id)) : null;
   const rows = match ? [
     { id: match.team1_id, name: match.team1_name },
     { id: match.team2_id, name: match.team2_name },
   ].filter(row => row.id) : [];
   setOptions($('#result-winner-select'), rows, row => row.id, row => row.name, 'ไม่ระบุ / เสมอ');
+  const mode = rule?.scoring_mode || 'points';
+  const unit = ({ points: 'คะแนน', sets: 'จำนวนเซต/เกมที่ชนะ', time: 'เวลา (วินาที)', rank: 'อันดับ' })[mode] || 'ผล';
+  $('#result-side1-label').textContent = `${unit} ${match?.team1_name || 'ฝั่งที่ 1'}`;
+  $('#result-side2-label').textContent = `${unit} ${match?.team2_name || 'ฝั่งที่ 2'}`;
+  $('#result-mode-help').textContent = ({
+    points: 'ตรวจสอบคะแนนรวมจากเหตุการณ์ แล้วจึงยืนยันผลการแข่งขัน',
+    sets: 'กรอกจำนวนเซตหรือเกมที่แต่ละฝั่งชนะ ระบบจะตัดสินผู้ชนะจากจำนวนที่มากกว่า',
+    time: 'กรอกเวลาเป็นวินาที ระบบใช้ค่าที่ต่ำกว่าหรือสูงกว่าตามชุดกติกา',
+    rank: 'กรอกอันดับของแต่ละฝั่ง โดยอันดับ 1 เป็นอันดับสูงสุด',
+  })[mode] || 'กรอกผลตามชุดกติกาของกีฬาที่เลือก';
 }
 
 async function loadDashboard() {
@@ -1030,7 +1621,6 @@ async function loadDashboard() {
   $('#d-approved-teams').textContent = data.counts.approvedTeams;
   $('#d-students').textContent = data.counts.students;
   $('#d-completed').textContent = data.counts.completedMatches;
-  $('#d-open-tasks').textContent = data.counts.openTasks || 0;
   renderTable('#audit-table', [
     ['created_at', 'เวลา'],
     ['user_email', 'ผู้ใช้'],
@@ -1038,11 +1628,6 @@ async function loadDashboard() {
     ['entity', 'ข้อมูล'],
     ['entity_id', 'รหัสอ้างอิง'],
   ], data.recentAudit || []);
-}
-
-async function loadDashboardCountsOnly() {
-  const data = await request('dashboard.summary', {}, { silent: true });
-  $('#d-open-tasks').textContent = data.counts.openTasks || 0;
 }
 
 async function loadSportsAdmin() {
@@ -1072,9 +1657,11 @@ async function loadSportsAdmin() {
     ['name', 'ชื่อกติกา'],
     ['format', 'รูปแบบ', (_, row) => `${row.period_count} ช่วง x ${row.period_minutes} นาที`],
     ['overtime_enabled', 'ต่อเวลา', value => value ? 'มี' : 'ไม่มี'],
-    ['is_active', 'ใช้งาน', value => Number(value) ? 'ใช้งาน' : 'เก็บประวัติ'],
+    ['is_active', 'สถานะ', value => Number(value) ? 'ชุดหลัก' : 'เก็บประวัติ'],
+    ['usage_count', 'ถูกนำไปใช้', value => `${Number(value || 0)} รายการ`],
     ['actions', 'จัดการ', (_, row) => rowActions([
-      ['แก้ไข', () => fillSportRule(row)],
+      ...(!row.is_referenced ? [['แก้ไข', () => fillSportRule(row)]] : []),
+      ['สร้างเวอร์ชันใหม่', () => cloneSportRule(row)],
     ])],
   ], app.sportRules);
   const organizationRows = [
@@ -1094,8 +1681,17 @@ async function loadSportsAdmin() {
 function fillSportRule(row) {
   fillForm('#sport-rule-form', {
     ...row,
-    event_types_text: (row.event_types_data || []).map(item => `${item.code}|${item.label}|${item.points || 0}`).join('\n'),
+    event_types_text: (row.event_types_data || []).map(item => `${item.code}|${item.label}|${item.points || 0}|${item.participant || 'optional'}`).join('\n'),
     custom_rules: row.custom_rules_text || '',
+  });
+}
+
+function cloneSportRule(row) {
+  fillSportRule({
+    ...row,
+    id: '',
+    name: `${row.name} (ปรับปรุง)`,
+    is_active: 1,
   });
 }
 
@@ -1133,8 +1729,7 @@ function studentScopeValues() {
 }
 
 function studentScopeReady() {
-  const scope = studentScopeValues();
-  return Boolean(scope.facultyId && scope.departmentCode && scope.sportId);
+  return true;
 }
 
 function syncStudentScope() {
@@ -1171,38 +1766,33 @@ function renderScopedStudents() {
   const scope = studentScopeValues();
   const actionButtons = $$('[data-student-scope-action]');
   actionButtons.forEach(button => {
-    button.disabled = !studentScopeReady();
-    button.title = studentScopeReady() ? '' : 'เลือกคณะ สาขา และกีฬาให้ครบก่อน';
+    button.disabled = false;
+    button.title = '';
   });
   const status = $('#student-scope-status');
-  if (!scope.facultyId) status.textContent = 'เริ่มจากเลือกคณะ/หน่วยงาน';
-  else if (!scope.departmentCode) status.textContent = 'ขั้นต่อไป เลือกสาขา';
-  else if (!scope.sportId) status.textContent = 'ขั้นต่อไป เลือกกีฬา';
+  if (!scope.facultyId && !scope.departmentCode && !scope.sportId) status.textContent = 'แสดงนักกีฬาทั้งหมด';
+  else if (!scope.departmentCode) status.textContent = 'เลือกกลุ่มย่อยเพื่อกรองเพิ่มเติม';
+  else if (!scope.sportId) status.textContent = 'เลือกกีฬาเพื่อกรองเพิ่มเติม';
   else {
     const department = app.departments.find(row => String(row.code) === scope.departmentCode);
     const sport = (app.workflow.data?.sports || app.sports).find(row => String(row.id) === scope.sportId);
     status.textContent = `${department?.name || scope.departmentCode} · ${sport?.name || 'กีฬาที่เลือก'}`;
   }
-  $('#student-scope').classList.toggle('complete', studentScopeReady());
-  if (!studentScopeReady()) {
-    target.innerHTML = emptyState('เลือกคณะ สาขา และกีฬาให้ครบ เพื่อดูและจัดการรายชื่อนักศึกษา');
-    refreshIcons(target);
-    return;
-  }
+  $('#student-scope').classList.toggle('complete', Boolean(scope.facultyId || scope.departmentCode || scope.sportId));
 
   const teamIds = new Set(app.teams
-    .filter(team => String(team.department_code || '') === scope.departmentCode && String(team.sport_id || '') === scope.sportId)
+    .filter(team => (!scope.departmentCode || String(team.department_code || '') === scope.departmentCode)
+      && (!scope.sportId || String(team.sport_id || '') === scope.sportId))
     .map(team => String(team.id)));
   const rosterStudentIds = new Set(app.members
     .filter(member => teamIds.has(String(member.team_id)))
     .map(member => String(member.student_id)));
-  const rows = app.students.filter(row => String(row.department_code || '') === scope.departmentCode);
+  const rows = app.students.filter(row => !scope.departmentCode || String(row.department_code || '') === scope.departmentCode);
   renderTable('#students-table', [
     ['id', 'ID'],
-    ['photo_url', 'รูป', value => value ? `<img class="student-table-photo" src="${escapeAttr(value)}" alt="">` : icon('user-round'), { html: true }],
     ['student_code', 'รหัส'],
     ['full_name', 'ชื่อ', (_, row) => [row.prefix, row.first_name, row.last_name].filter(Boolean).join(' ')],
-    ['department_name', 'สาขา'],
+    ['department_name', 'สังกัด'],
     ['roster_status', 'สถานะกีฬา', (_, row) => rosterStudentIds.has(String(row.id))
       ? '<span class="status-badge success">อยู่ในทีมแล้ว</span>'
       : '<span class="status-badge">รอจัดทีม</span>', { html: true }],
@@ -1222,26 +1812,16 @@ function focusMissingStudentScope() {
 }
 
 function openScopedStudentEditor() {
-  if (!studentScopeReady()) return focusMissingStudentScope();
-  openEditor('student-form', { department_code: studentScopeValues().departmentCode });
+  openEditor('student-form', { department_code: studentScopeValues().departmentCode || 'OPEN' });
 }
 
 function openStudentImport() {
-  if (!studentScopeReady()) return focusMissingStudentScope();
   $('#students-csv')?.closest('dialog')?.showModal();
 }
 
 function scopedStudentImportRows() {
-  if (!studentScopeReady()) {
-    focusMissingStudentScope();
-    throw new Error('กรุณาเลือกขอบเขตข้อมูลให้ครบก่อนนำเข้า');
-  }
   const departmentCode = studentScopeValues().departmentCode;
-  const rows = parseCsv($('#students-csv').value).map(row => ({ ...row, department_code: row.department_code || departmentCode }));
-  if (rows.some(row => String(row.department_code) !== departmentCode)) {
-    throw new Error(`ไฟล์ CSV ต้องเป็นสาขา ${departmentCode} เท่านั้น`);
-  }
-  return rows;
+  return parseCsv($('#students-csv').value).map(row => ({ ...row, department_code: row.department_code || departmentCode || 'OPEN' }));
 }
 
 async function loadTeamsAdmin() {
@@ -1316,8 +1896,12 @@ async function loadMatchesAdmin() {
     ['version_number', 'เวอร์ชัน'],
     ['name', 'ชื่อกติกา'],
     ['format', 'รูปแบบ', (_, row) => `${row.period_count} ช่วง x ${row.period_minutes} นาที`],
-    ['is_active', 'ใช้งาน', value => Number(value) ? 'ใช้งาน' : 'เก็บประวัติ'],
-    ['actions', 'จัดการ', (_, row) => rowActions([['แก้ไข', () => fillSportRule(row)]])],
+    ['is_active', 'สถานะ', value => Number(value) ? 'ชุดหลัก' : 'เก็บประวัติ'],
+    ['usage_count', 'ถูกนำไปใช้', value => `${Number(value || 0)} รายการ`],
+    ['actions', 'จัดการ', (_, row) => rowActions([
+      ...(!row.is_referenced ? [['แก้ไข', () => fillSportRule(row)]] : []),
+      ['สร้างเวอร์ชันใหม่', () => cloneSportRule(row)],
+    ])],
   ], app.sportRules);
   renderTable('#matches-table', [
     ['match_code', 'รหัส'],
@@ -1328,10 +1912,16 @@ async function loadMatchesAdmin() {
     ['score_label', 'คะแนน'],
     ['status_label', 'สถานะ'],
     ['actions', 'จัดการ', (_, row) => rowActions([
-      ['แก้ไข', () => fillForm('#match-form', row)],
+      ...(['super_admin', 'admin', 'sport_head'].includes(app.user?.role)
+        ? [['แก้ไข', () => fillForm('#match-form', row)]] : []),
       ['ศูนย์แข่งขัน', () => openMatchCenter(row.id)],
-      ['บันทึกผล', () => openEditor('result-form', { match_id: row.id, team1_score: row.team1_score, team2_score: row.team2_score })],
-      ['ลบ', () => deleteRow('matches.delete', row.id, loadMatchesAdmin), 'danger'],
+      ...(['super_admin', 'admin', 'result_officer'].includes(app.user?.role)
+        ? [['บันทึกผล', () => {
+          openEditor('result-form', { match_id: row.id, team1_score: row.team1_score, team2_score: row.team2_score });
+          syncResultWinnerOptions();
+        }]] : []),
+      ...(['super_admin', 'admin', 'sport_head'].includes(app.user?.role)
+        ? [['ลบ', () => deleteRow('matches.delete', row.id, loadMatchesAdmin), 'danger']] : []),
     ])],
   ], app.matches);
   syncAdminOptions();
@@ -1346,10 +1936,96 @@ async function loadMatchesAdmin() {
 }
 
 async function openMatchCenter(matchId) {
+  if (app.user?.role === 'result_officer' && app.currentView !== 'official') {
+    await showView('official');
+  }
   $('#match-center-select').value = String(matchId);
   await loadMatchCenter(String(matchId));
-  setWorkflowStep(10, false);
+  if (app.currentView === 'matches') setWorkflowStep(10, false);
+  if (app.currentView === 'official') renderOfficialMatchLists(String(matchId));
   $('#match-center-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function mountOfficialMatchCenter(active) {
+  const panel = $('#match-center-panel');
+  const host = $('#official-center-host');
+  if (!panel || !host) return;
+  if (!app.matchCenterOrigin) {
+    app.matchCenterOrigin = { parent: panel.parentNode, next: panel.nextSibling };
+  }
+  if (active) {
+    host.replaceChildren(panel);
+    panel.classList.add('official-mode');
+    document.body.classList.add('official-console-active');
+    return;
+  }
+  panel.classList.remove('official-mode');
+  document.body.classList.remove('official-console-active');
+  const { parent, next } = app.matchCenterOrigin;
+  if (parent && panel.parentNode !== parent) parent.insertBefore(panel, next && next.parentNode === parent ? next : null);
+}
+
+async function loadOfficialCenter(force = false) {
+  mountOfficialMatchCenter(true);
+  if (force || !app.matches.length) await loadAdminRefs();
+  if (!app.sportRules.length) {
+    app.sportRules = await request('sportRules.list', { sport_id: '' }, { silent: true }).catch(() => []);
+  }
+  const selectable = app.matches.filter(row => !['cancelled', 'postponed'].includes(String(row.status)) && row.team1_id && row.team2_id);
+  const currentId = String(app.matchCenter?.match?.id || $('#match-center-select').value || '');
+  const selected = selectable.find(row => String(row.id) === currentId)
+    || selectable.find(row => row.status === 'live')
+    || selectable.find(row => row.status === 'scheduled')
+    || selectable.find(row => row.status === 'completed');
+  renderOfficialMatchLists(String(selected?.id || ''));
+  if (selected) {
+    $('#match-center-select').value = String(selected.id);
+    await loadMatchCenter(String(selected.id));
+  } else {
+    $('#match-center-empty').hidden = false;
+    $('#match-center-content').hidden = true;
+    renderOfficialEventFeed([]);
+  }
+}
+
+function renderOfficialMatchLists(selectedId = '') {
+  const groups = {
+    '#official-live-matches': app.matches.filter(row => row.status === 'live'),
+    '#official-upcoming-matches': app.matches.filter(row => row.status === 'scheduled'),
+    '#official-completed-matches': app.matches.filter(row => row.status === 'completed').slice(0, 5),
+  };
+  Object.entries(groups).forEach(([selector, rows]) => {
+    const host = $(selector);
+    host.innerHTML = rows.length ? rows.map(row => `
+      <button class="official-match-item ${String(row.id) === String(selectedId) ? 'selected' : ''}" type="button" data-official-match="${escapeAttr(row.id)}">
+        <span class="official-match-state status-${matchStatusClass(row.status)}">${escapeHtml(row.status_label || workspace.labels[row.status] || row.status)}</span>
+        <strong>${escapeHtml(row.team1_name || '-')} <b>${row.team1_score ?? '-'}</b></strong>
+        <strong>${escapeHtml(row.team2_name || '-')} <b>${row.team2_score ?? '-'}</b></strong>
+        <small>${escapeHtml([row.match_code, row.venue, row.scheduled_at].filter(Boolean).join(' · '))}</small>
+      </button>
+    `).join('') : '<p class="official-list-empty">ไม่มีรายการ</p>';
+  });
+  $$('[data-official-match]').forEach(button => button.addEventListener('click', async () => {
+    const id = button.dataset.officialMatch;
+    renderOfficialMatchLists(id);
+    $('#match-center-select').value = String(id);
+    await loadMatchCenter(String(id));
+  }));
+}
+
+function renderOfficialEventFeed(events = []) {
+  const active = events.filter(row => !Number(row.is_voided));
+  $('#official-event-count').textContent = `${active.length} รายการ`;
+  $('#official-event-feed').innerHTML = active.length ? active.map(row => `
+    <article class="official-event-item">
+      <time>${Math.floor(Number(row.elapsed_seconds) / 60)}:${String(Number(row.elapsed_seconds) % 60).padStart(2, '0')}</time>
+      <div><strong>${escapeHtml(eventTypeLabel(row.event_type))}</strong><span>${escapeHtml([row.team_name, row.student_name].filter(Boolean).join(' · '))}</span>${row.note ? `<small>${escapeHtml(row.note)}</small>` : ''}</div>
+      <b>${Number(row.points) ? `+${escapeHtml(row.points)}` : ''}</b>
+      <button class="icon-button" type="button" data-void-official-event="${escapeAttr(row.id)}" aria-label="ยกเลิกเหตุการณ์"><i data-lucide="undo-2"></i></button>
+    </article>
+  `).join('') : '<div class="empty-state">ยังไม่มีเหตุการณ์</div>';
+  $$('[data-void-official-event]').forEach(button => button.addEventListener('click', () => voidMatchEvent(button.dataset.voidOfficialEvent)));
+  refreshIcons($('#official-event-feed'));
 }
 
 async function loadMatchCenter(matchId) {
@@ -1365,7 +2041,17 @@ async function loadMatchCenter(matchId) {
   $('#center-team1').textContent = match.team1_name;
   $('#center-team2').textContent = match.team2_name;
   $('#center-score').textContent = `${match.team1_score || 0} - ${match.team2_score || 0}`;
+  const status = String(match.status || 'scheduled');
+  const statusNode = $('#center-status');
+  statusNode.textContent = match.status_label || workspace.labels[status] || status;
+  statusNode.className = `badge status-${matchStatusClass(status)}`;
+  const scoringLabels = { points: 'คะแนนรวม', sets: 'คะแนนแบบเซต/เกม', time: 'เวลา', rank: 'อันดับหรือสถิติ' };
+  $('#center-rule-summary').textContent = `${match.sport_name || 'กีฬา'} · ${scoringLabels[data.rule.scoring_mode] || data.rule.scoring_mode}`;
   $('#center-period').textContent = `ช่วงที่ ${match.current_period || 1}`;
+  $('#center-roster1-title').textContent = `นักกีฬา ${match.team1_name || 'ทีม 1'}`;
+  $('#center-roster2-title').textContent = `นักกีฬา ${match.team2_name || 'ทีม 2'}`;
+  renderMatchRoster('#center-roster1', data.team1_members || []);
+  renderMatchRoster('#center-roster2', data.team2_members || []);
   $('#match-event-form [name="match_id"]').value = match.id;
   setOptions($('#event-type'), data.rule.event_types_data || [], row => row.code, row => row.label, 'เลือกเหตุการณ์');
   setOptions($('#event-team'), [
@@ -1375,14 +2061,41 @@ async function loadMatchCenter(matchId) {
   updateCenterClock(Number(match.clock_seconds) || 0);
   syncEventStudents();
   syncEventPoints();
+  const isLive = status === 'live';
+  const isComplete = status === 'completed';
+  $('#clock-start').disabled = isLive || isComplete;
+  $('#clock-pause').disabled = isComplete || match.clock_status !== 'running';
+  $('#clock-next').disabled = !isLive;
+  $('#clock-overtime').disabled = !isLive || !Number(data.rule.overtime_enabled);
+  $('#match-finish').disabled = !isLive;
+  $('#match-event-form [type="submit"]').disabled = !isLive;
+  $('#event-entry-help').textContent = isComplete
+    ? 'การแข่งขันจบแล้ว เหตุการณ์ที่บันทึกไว้ใช้ตรวจสอบผลย้อนหลัง'
+    : isLive
+      ? 'เลือกเหตุการณ์ ทีม และนักกีฬาตามที่ชุดกติกากำหนด คะแนนจะรวมให้อัตโนมัติ'
+      : 'กดเริ่มการแข่งขันก่อนบันทึกคะแนนหรือเหตุการณ์';
   renderTable('#match-events-table', [
     ['time', 'เวลา', (_, row) => `${Math.floor(Number(row.elapsed_seconds) / 60)}:${String(Number(row.elapsed_seconds) % 60).padStart(2, '0')}`],
     ['event_type', 'เหตุการณ์', value => eventTypeLabel(value)],
     ['team_name', 'ทีม'], ['student_name', 'นักกีฬา'], ['points', 'แต้ม'], ['note', 'หมายเหตุ'],
     ['actions', 'จัดการ', (_, row) => Number(row.is_voided) ? 'ยกเลิกแล้ว' : rowActions([['ยกเลิกเหตุการณ์', () => voidMatchEvent(row.id)]])],
   ], data.events || []);
+  if (app.currentView === 'official') {
+    renderOfficialMatchLists(String(match.id));
+    renderOfficialEventFeed(data.events || []);
+  }
   if (match.clock_status === 'running') startLocalClock();
   refreshIcons($('#match-center-panel'));
+}
+
+function renderMatchRoster(selector, rows) {
+  const host = $(selector);
+  host.innerHTML = rows.length ? rows.map(row => `
+    <div class="match-roster-member">
+      <b>${escapeHtml(row.shirt_number || '-')}</b>
+      <div><span>${escapeHtml(row.full_name || '-')}</span><small>${escapeHtml([row.student_code, row.department_name, row.field_position || row.role].filter(Boolean).join(' · '))}</small></div>
+    </div>
+  `).join('') : '<span class="muted">ยังไม่มีรายชื่อนักกีฬา</span>';
 }
 
 function eventTypeLabel(code) {
@@ -1395,11 +2108,26 @@ function syncEventStudents() {
   const match = app.matchCenter.match;
   const rows = String(teamId) === String(match.team1_id) ? app.matchCenter.team1_members : String(teamId) === String(match.team2_id) ? app.matchCenter.team2_members : [];
   setOptions($('#event-student'), rows || [], row => row.student_id, row => `${row.shirt_number || '-'} ${row.full_name}`, 'ไม่ระบุนักกีฬา');
+  syncEventParticipantRequirements();
 }
 
 function syncEventPoints() {
   const definition = app.matchCenter?.rule?.event_types_data?.find(row => row.code === $('#event-type').value);
   $('#event-points').value = definition ? Number(definition.points || 0) : 0;
+  syncEventParticipantRequirements();
+}
+
+function syncEventParticipantRequirements() {
+  const definition = app.matchCenter?.rule?.event_types_data?.find(row => row.code === $('#event-type').value);
+  const participant = definition?.participant || 'optional';
+  const requiresTeam = participant === 'athlete' || participant === 'team' || Number(definition?.points || 0) !== 0;
+  $('#event-team').required = requiresTeam;
+  $('#event-student').required = participant === 'athlete';
+  $('#event-entry-help').textContent = participant === 'athlete'
+    ? 'เหตุการณ์นี้ต้องเลือกทีมและนักกีฬา เพื่อให้ตรวจสอบผู้ทำคะแนนหรือผู้ทำฟาวล์ได้'
+    : participant === 'team'
+      ? 'เหตุการณ์นี้บันทึกในระดับทีม ไม่จำเป็นต้องเลือกนักกีฬา'
+      : 'สามารถระบุทีมหรือนักกีฬาเพิ่มเติมได้ตามเหตุการณ์จริง';
 }
 
 function updateCenterClock(seconds) {
@@ -1424,6 +2152,22 @@ async function controlMatchClock(clockAction) {
   await loadMatchCenter(String(app.matchCenter.match.id));
 }
 
+async function finishMatchFromCenter() {
+  if (!app.matchCenter || String(app.matchCenter.match.status) !== 'live') return;
+  const matchId = String(app.matchCenter.match.id);
+  if (app.matchCenter.match.clock_status === 'running') {
+    await controlMatchClock('pause');
+  }
+  const match = app.matchCenter.match;
+  openEditor('result-form', {
+    match_id: matchId,
+    team1_score: Number(match.team1_score || 0),
+    team2_score: Number(match.team2_score || 0),
+    winner_team_id: match.winner_team_id || '',
+  });
+  syncResultWinnerOptions();
+}
+
 async function saveMatchEventFromForm(event) {
   event.preventDefault();
   const form = event.currentTarget;
@@ -1434,7 +2178,10 @@ async function saveMatchEventFromForm(event) {
     await request('matches.event', payload);
     form.elements.note.value = '';
     await loadMatchCenter(payload.match_id);
-    await loadMatchesAdmin();
+    if (app.currentView === 'official') {
+      await loadAdminRefs();
+      renderOfficialMatchLists(String(payload.match_id));
+    } else await loadMatchesAdmin();
     toast('บันทึกเหตุการณ์แล้ว');
   });
 }
@@ -1443,7 +2190,10 @@ async function voidMatchEvent(id) {
   if (!await confirmAction('ยกเลิกเหตุการณ์นี้?', 'เหตุการณ์จะยังอยู่ในประวัติ แต่ไม่นำไปคำนวณคะแนน', 'ยกเลิกเหตุการณ์', true)) return;
   await request('matches.eventVoid', { id });
   await loadMatchCenter(String(app.matchCenter.match.id));
-  await loadMatchesAdmin();
+  if (app.currentView === 'official') {
+    await loadAdminRefs();
+    renderOfficialMatchLists(String(app.matchCenter.match.id));
+  } else await loadMatchesAdmin();
 }
 
 async function loadStandings(tournamentId) {
@@ -1499,53 +2249,6 @@ function syncNewsAiOptions(source = '') {
   setOptions(matchSelect, visibleMatches, row => row.id, row => row.display_label, 'เลือกแมตช์ล่าสุดอัตโนมัติ');
 }
 
-async function loadTasksAdmin() {
-  const [tasks, assignees] = await Promise.all([
-    request('tasks.list'),
-    request('tasks.assignees', {}, { silent: true }).catch(() => []),
-  ]);
-  app.tasks = tasks;
-  app.taskAssignees = assignees;
-  setOptions($('#task-assignee-select'), app.taskAssignees, row => row.email, row => `${row.name || row.email} (${row.role || '-'})`, 'ไม่ระบุ');
-  renderTaskBoard(tasks);
-  renderTable('#tasks-table', [
-    ['title', 'งาน'],
-    ['category_label', 'หมวด'],
-    ['priority_label', 'ความสำคัญ'],
-    ['status_label', 'สถานะ'],
-    ['due_label', 'กำหนดเสร็จ'],
-    ['assignee_label', 'ผู้รับผิดชอบ'],
-    ['actions', 'จัดการ', (_, row) => rowActions([
-      ['แก้ไข', () => fillForm('#task-form', row)],
-      [row.status === 'done' ? 'เปิดใหม่' : 'เสร็จแล้ว', () => setTaskStatus(row.id, row.status === 'done' ? 'todo' : 'done')],
-      ['ลบ', () => deleteRow('tasks.delete', row.id, loadTasksAdmin), 'danger'],
-    ])],
-  ], tasks);
-}
-
-function renderTaskBoard(rows) {
-  const groups = {
-    todo: rows.filter(row => row.status === 'todo').length,
-    doing: rows.filter(row => row.status === 'doing').length,
-    blocked: rows.filter(row => row.status === 'blocked').length,
-    done: rows.filter(row => row.status === 'done').length,
-  };
-  const overdue = rows.filter(row => row.is_overdue).length;
-  $('#task-board').innerHTML = `
-    <div class="task-lane"><span>ต้องทำ</span><strong>${groups.todo}</strong></div>
-    <div class="task-lane"><span>กำลังทำ</span><strong>${groups.doing}</strong></div>
-    <div class="task-lane warning"><span>ติดปัญหา</span><strong>${groups.blocked}</strong></div>
-    <div class="task-lane danger"><span>เกินกำหนด</span><strong>${overdue}</strong></div>
-  `;
-}
-
-async function setTaskStatus(id, status) {
-  await request('tasks.status', { id, status });
-  await loadTasksAdmin();
-  await loadDashboardCountsOnly();
-  toast(status === 'done' ? 'ปิดงานแล้ว' : 'เปิดงานกลับมาทำต่อแล้ว');
-}
-
 async function publishNews(id) {
   await request('news.publish', { id });
   await loadNewsAdmin();
@@ -1555,6 +2258,7 @@ async function publishNews(id) {
 
 async function loadUsersAdmin() {
   const options = await request('users.options');
+  $('#staff-invites-enabled').checked = Boolean(options.staff_invites_enabled);
   app.departments = options.departments || [];
   app.sports = options.sports || app.sports;
   setOptions($('#user-role-select'), options.roles || [], row => row.value, row => row.label, 'เลือกบทบาท');
@@ -1592,6 +2296,16 @@ async function loadUsersAdmin() {
       [row.status === 'pending' ? 'ยกเลิก' : 'ดูแล้ว', () => row.status === 'pending' ? revokeInvite(row.id) : Promise.resolve(), row.status === 'pending' ? 'danger' : ''],
     ])],
   ], app.invites);
+  await loadAuditLogs();
+}
+
+async function loadAuditLogs() {
+  const rows = await request('audit.list', { q: $('#audit-search').value }, { silent: true });
+  renderTable('#audit-full-table', [
+    ['created_at', 'เวลา'], ['user_email', 'ผู้ใช้'], ['action', 'การดำเนินการ'],
+    ['entity', 'ข้อมูล'], ['entity_id', 'รหัสอ้างอิง'],
+    ['detail_json', 'รายละเอียด', value => String(value || '').slice(0, 180)],
+  ], rows);
 }
 
 function renderInviteLink(url) {
@@ -1633,13 +2347,7 @@ async function openInviteAccept(token) {
 }
 
 async function loadReportOptions() {
-  const [options, aiSettings] = await Promise.all([
-    request('reports.options'),
-    request('ai.models', {}, { silent: true }).catch(() => ({ configured: false, default_model: 'local-summary' })),
-  ]);
-  app.reportOptions = options;
-  app.aiSettings = aiSettings;
-  ensureAiReportTools(aiSettings);
+  app.reportOptions = await request('reports.options');
   renderReportCategories();
   syncReportFilters();
   await loadReportsAdmin();
@@ -1675,14 +2383,14 @@ function renderReportsDashboard() {
     ['title', 'ชื่อรายงาน'],
     ['category_name', 'หมวดหมู่'],
     ['template_name', 'ประเภทแบบฟอร์ม'],
-    ['academic_year', 'ปีการศึกษา'],
+    ['academic_year', 'ปี / รุ่น'],
     ['report_date_label', 'วันที่จัดทำ'],
     ['prepared_by', 'ผู้จัดทำ'],
     ['status_label', 'สถานะ'],
     ['actions', 'จัดการ', (_, row) => rowActions([
       ['ดูรายงาน', () => viewStoredReport(row.id)],
       ...(permissions.edit ? [['แก้ไข', () => editStoredReport(row.id)]] : []),
-      ['ดาวน์โหลด', () => exportStoredReport(row.id)],
+      ['ดาวน์โหลด PDF', () => exportStoredReport(row.id)],
       ...(permissions.edit && row.status === 'draft' ? [['ส่งตรวจ', () => setReportStatus(row.id, 'review')]] : []),
       ...(permissions.edit && row.status === 'review' ? [['เสร็จสมบูรณ์', () => setReportStatus(row.id, 'completed')]] : []),
       ...(permissions.publish && row.status === 'completed' ? [['เผยแพร่', () => setReportStatus(row.id, 'published')]] : []),
@@ -1698,8 +2406,6 @@ function syncReportFilters() {
   setOptions($('#report-template-filter'), options.templates, row => row.id, row => row.name, 'ทุกแบบฟอร์ม');
   setOptions($('#report-tournament-select'), options.tournaments, row => row.id, row => row.name + (row.sport_name ? ' (' + row.sport_name + ')' : ''), 'ข้อมูลการแข่งขันทั้งหมด');
   const years = [...new Set(options.tournaments.map(row => row.academic_year).filter(Boolean))];
-  const currentYear = options.settings.current_academic_year;
-  if (currentYear && !years.includes(currentYear)) years.unshift(currentYear);
   setOptions($('#report-year-filter'), years.map(value => ({ value })), row => row.value, row => row.value, 'ทุกปี');
 }
 
@@ -1764,9 +2470,9 @@ function openReportBuilder(report = null) {
   app.activeReport = report;
   $('#report-dashboard').hidden = true;
   $('#report-builder').hidden = false;
-  $('#report-builder-title').textContent = report ? 'แก้ไขรายงาน' : 'สร้างรายงานใหม่';
+  $('#report-builder-title').textContent = report ? 'ตรวจสอบและแก้ไขรายงาน' : 'สรุปผลรายงาน';
   form.elements.report_date.value = new Date().toISOString().slice(0, 10);
-  form.elements.academic_year.value = app.reportOptions?.settings?.current_academic_year || '';
+  form.elements.academic_year.value = '';
   form.elements.prepared_by.value = app.user?.name || app.user?.email || '';
   form.elements.status.value = 'draft';
   $('#report-kpi-editor').innerHTML = '';
@@ -1778,7 +2484,16 @@ function openReportBuilder(report = null) {
     fillReportEditor(report);
     setReportStep(3);
   } else {
-    setReportStep(1);
+    const standardTemplate = app.reportOptions?.templates?.find(row => row.code === 'annual-overview')
+      || app.reportOptions?.templates?.find(row => row.code === 'executive-summary')
+      || app.reportOptions?.templates?.[0];
+    const standardCategory = standardTemplate
+      ? app.reportOptions?.categories?.find(row => String(row.id) === String(standardTemplate.category_id))
+      : app.reportOptions?.categories?.[0];
+    if (standardCategory) selectReportCategory(standardCategory);
+    if (standardTemplate) selectReportTemplate(standardTemplate);
+    applyReportSections(['general', 'principles', 'performance', 'sports_results', 'kpi', 'budget', 'outcomes', 'problems', 'executive', 'attachments']);
+    setReportStep(3);
   }
   refreshIcons($('#report-builder'));
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1820,25 +2535,15 @@ function setReportStep(step) {
     item.classList.toggle('active', number === step);
     item.classList.toggle('done', number < step);
   });
-  $('#report-prev-step').hidden = step === 1;
+  $('#report-prev-step').hidden = step === 3;
   $('#report-save-draft').hidden = step !== 3 || !app.reportOptions?.permissions?.edit;
   $('#report-next-step').hidden = step === 4;
-  $('#report-ai-assist').hidden = step !== 3 || !app.reportOptions?.permissions?.ai;
+  $('#report-form').hidden = step !== 3 || !app.reportOptions?.permissions?.edit;
   refreshIcons($('#report-builder'));
 }
 
 async function nextReportStep() {
   const form = $('#report-editor-form');
-  if (app.reportStep === 1) {
-    if (!form.elements.category_id.value) return toast('กรุณาเลือกหมวดหมู่รายงาน', true);
-    setReportStep(2);
-    return;
-  }
-  if (app.reportStep === 2) {
-    if (!form.elements.template_id.value) return toast('กรุณาเลือกประเภทแบบฟอร์ม', true);
-    setReportStep(3);
-    return;
-  }
   if (app.reportStep === 3) {
     if (!form.reportValidity()) return;
     const report = await saveReportEditor(form.elements.status.value || 'draft', true);
@@ -1957,13 +2662,12 @@ function applyReportAiDraft(result) {
 
   $('#report-output').innerHTML = `
     <article class="formal-report-card compact">
-      <div class="ai-meta"><span class="badge">${escapeHtml(result.provider || 'local-summary')}</span><span>${escapeHtml(result.model || '')}</span></div>
-      <h3>เติมร่างรายงานลงในแบบฟอร์มแล้ว</h3>
-      <p>${escapeHtml(draft.executive_summary || 'AI ได้ช่วยเรียบเรียงข้อมูลตามหมวดหมู่รายงานที่เลือกเรียบร้อยแล้ว กรุณาตรวจทานความถูกต้องก่อนบันทึกหรือเผยแพร่')}</p>
-      ${draft.fallback_reason ? `<p class="muted">ใช้ร่างสำรองในระบบ เนื่องจาก: ${escapeHtml(draft.fallback_reason)}</p>` : ''}
+      <div class="ai-meta"><span class="badge">ข้อมูลจากระบบ</span><span>${escapeHtml(result.generated_at || '')}</span></div>
+      <h3>สรุปผลลงในแบบรายงานทางการแล้ว</h3>
+      <p>${escapeHtml(draft.executive_summary || 'ระบบรวบรวมข้อมูลตามขอบเขตที่เลือกแล้ว กรุณาตรวจทานก่อนบันทึกและส่งออก PDF')}</p>
     </article>
   `;
-  toast('AI เติมร่างรายงานลงในฟอร์มแล้ว');
+  toast('สรุปผลรายงานจากข้อมูลระบบแล้ว');
   refreshIcons($('#report-builder'));
 }
 
@@ -2064,10 +2768,9 @@ async function renderStoredReportPreview(report) {
   const exported = await request('reports.export', { id: report.id });
   $('#stored-report-preview').innerHTML =
     '<div class="report-preview-toolbar"><span class="status-badge success">' + escapeHtml(report.status_label) + '</span><div class="actions">' +
-    '<a class="btn small" href="' + escapeAttr(exported.word_url) + '" download>' + icon('file-down') + '<span>ดาวน์โหลด Word</span></a>' +
-    '<a class="btn small" href="' + escapeAttr(exported.document_url) + '" download>' + icon('braces') + '<span>ข้อมูล JSON</span></a>' +
-    '<a class="btn small primary" href="' + escapeAttr(exported.report_url) + '" target="_blank" rel="noopener">' + icon('printer') + '<span>พิมพ์ / บันทึก PDF</span></a></div></div>' +
+    '<button class="btn small primary" id="report-download-pdf" type="button">' + icon('file-down') + '<span>ดาวน์โหลด PDF</span></button></div></div>' +
     '<iframe title="ตัวอย่างรายงาน ' + escapeAttr(report.title) + '" src="' + escapeAttr(exported.report_url) + '"></iframe>';
+  $('#report-download-pdf').addEventListener('click', event => runTask(event.currentTarget, () => downloadReportPdf(report.id, exported)));
   refreshIcons($('#stored-report-preview'));
 }
 
@@ -2084,7 +2787,72 @@ async function editStoredReport(id) {
 
 async function exportStoredReport(id) {
   const result = await request('reports.export', { id });
-  window.open(result.report_url, '_blank', 'noopener');
+  await downloadReportPdf(id, result);
+}
+
+async function downloadReportPdf(id, exported = null) {
+  if (typeof window.html2pdf !== 'function') {
+    throw new Error('ไม่พบเครื่องมือสร้าง PDF กรุณารีเฟรชหน้าแล้วลองใหม่');
+  }
+  const result = exported || await request('reports.export', { id });
+  const frame = document.createElement('iframe');
+  frame.setAttribute('aria-hidden', 'true');
+  frame.style.cssText = 'position:fixed;left:-10000px;top:0;width:900px;height:1200px;opacity:0;pointer-events:none;border:0';
+  frame.src = result.report_url;
+  document.body.append(frame);
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('โหลดรูปแบบรายงานไม่สำเร็จ')), 15000);
+      frame.addEventListener('load', () => { clearTimeout(timer); resolve(); }, { once: true });
+      frame.addEventListener('error', () => { clearTimeout(timer); reject(new Error('โหลดรูปแบบรายงานไม่สำเร็จ')); }, { once: true });
+    });
+    const reportDocument = frame.contentDocument;
+    const source = reportDocument?.querySelector('main');
+    if (!source) throw new Error('ไม่พบเนื้อหารายงานสำหรับสร้าง PDF');
+    if (reportDocument.fonts?.ready) await reportDocument.fonts.ready;
+    const style = reportDocument.createElement('style');
+    style.textContent = 'body{background:#fff!important}main{width:182mm!important;margin:0!important;padding:0!important;box-shadow:none!important}.cover{min-height:260mm!important;page-break-after:auto!important}.book-page{page-break-before:auto!important}';
+    reportDocument.head.append(style);
+    if (typeof frame.contentWindow.html2pdf !== 'function') {
+      const library = reportDocument.createElement('script');
+      library.src = document.querySelector('script[src*="html2pdf"]')?.src || '';
+      await new Promise((resolve, reject) => {
+        library.addEventListener('load', resolve, { once: true });
+        library.addEventListener('error', () => reject(new Error('โหลดเครื่องมือสร้าง PDF ไม่สำเร็จ')), { once: true });
+        reportDocument.head.append(library);
+      });
+    }
+    const pdfOptions = frame.contentWindow.JSON.parse(JSON.stringify({
+      margin: [14, 14, 16, 14],
+      filename: result.pdf_filename || `rmutt-sport-report-${id}.pdf`,
+      image: { type: 'jpeg', quality: 0.98 },
+      html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait', compress: true },
+      pagebreak: { mode: ['css', 'legacy'], before: '.book-page' },
+    }));
+    const worker = frame.contentWindow.html2pdf().set(pdfOptions).from(source).toPdf();
+    await worker.get('pdf').then(pdf => {
+      const pages = pdf.internal.getNumberOfPages();
+      for (let page = 1; page <= pages; page += 1) {
+        pdf.setPage(page);
+        pdf.setFontSize(9);
+        pdf.setTextColor(100);
+        pdf.text(`${page} / ${pages}`, 196, 289, { align: 'right' });
+      }
+    });
+    const blob = await worker.outputPdf('blob');
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = result.pdf_filename || `rmutt-sport-report-${id}.pdf`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    toast('ดาวน์โหลดไฟล์ PDF แล้ว');
+  } finally {
+    frame.remove();
+  }
 }
 
 async function setReportStatus(id, status) {
@@ -2094,13 +2862,7 @@ async function setReportStatus(id, status) {
 }
 
 function syncReportAiFields() {
-  const editor = $('#report-editor-form');
-  const aiForm = $('#report-form');
-  if (!editor || !aiForm) return;
-  const category = app.reportOptions?.categories?.find(row => String(row.id) === String(editor.elements.category_id.value));
-  aiForm.elements.report_type.value = category?.code === 'competition' ? 'competition' : 'executive';
-  aiForm.elements.tournament_id.value = editor.elements.tournament_id.value;
-  aiForm.elements.academic_year.value = editor.elements.academic_year.value;
+  // Kept as a compatibility hook for existing report editor calls.
 }
 
 function debounce(callback, delay) {
@@ -2202,12 +2964,10 @@ function renderMetricTable(metrics = {}) {
     activeSports: 'กีฬาเปิดใช้งาน',
     teams: 'จำนวนทีม',
     approvedTeams: 'ทีมที่อนุมัติ',
-    students: 'จำนวนนักศึกษา',
+    students: 'จำนวนนักกีฬา',
     tournaments: 'จำนวนรายการแข่งขัน',
     matches: 'จำนวนแมตช์',
     completedMatches: 'แมตช์ที่บันทึกผลแล้ว',
-    openTasks: 'งานคงค้าง',
-    overdueTasks: 'งานเกินกำหนด',
   };
   const rows = Object.entries(labels)
     .filter(([key]) => Object.prototype.hasOwnProperty.call(metrics, key))
@@ -2235,6 +2995,7 @@ function renderList(title, rows) {
 
 function renderChips(selector, rows, labeler) {
   const target = $(selector);
+  if (!target) return;
   target.innerHTML = rows.length
     ? rows.map(row => `<span class="chip">${escapeHtml(labeler(row))}</span>`).join('')
     : emptyState('ยังไม่มีข้อมูล');
@@ -2246,22 +3007,56 @@ function renderMatchCards(selector, rows) {
     target.innerHTML = emptyState('ยังไม่มีแมตช์');
     return;
   }
-  target.innerHTML = rows.map(row => `
+  const resultsView = selector.includes('results');
+  target.classList.toggle('match-list-results', resultsView);
+  target.innerHTML = rows.map(row => resultsView ? `
+    <article class="match-card result-match-card">
+      <header class="result-card-context">
+        <div><span class="badge match-status status-${matchStatusClass(row.status)}">${escapeHtml(row.status_label || row.status || '-')}</span><small>${escapeHtml(row.match_code || '')}</small></div>
+        <strong>${escapeHtml(row.sport_name || 'กีฬา')}</strong>
+      </header>
+      <div class="result-card-scoreboard">
+        <div class="result-card-team">
+          ${(row.team1_logo_url || row.team1_department_logo_url) ? `<img src="${escapeAttr(row.team1_logo_url || row.team1_department_logo_url)}" alt="" onerror="this.onerror=null;this.src='public/assets/logo.png'">` : `<span>${escapeHtml(String(row.team1_name || '1').trim().charAt(0))}</span>`}
+          <strong>${escapeHtml(row.team1_name || 'ทีม 1')}</strong>
+        </div>
+        <div class="result-score-lockup"><small>FULL TIME</small><b>${escapeHtml(row.score_label || '-- : --')}</b></div>
+        <div class="result-card-team">
+          ${(row.team2_logo_url || row.team2_department_logo_url) ? `<img src="${escapeAttr(row.team2_logo_url || row.team2_department_logo_url)}" alt="" onerror="this.onerror=null;this.src='public/assets/logo.png'">` : `<span>${escapeHtml(String(row.team2_name || '2').trim().charAt(0))}</span>`}
+          <strong>${escapeHtml(row.team2_name || 'ทีม 2')}</strong>
+        </div>
+      </div>
+      <footer class="result-card-meta">
+        <span>${icon('trophy')}${escapeHtml(row.tournament_name || '')}</span>
+        <span>${icon('calendar-days')}${escapeHtml(row.scheduled_at || 'ยังไม่ระบุเวลา')}</span>
+        ${row.venue ? `<span>${icon('map-pin')}${escapeHtml(row.venue)}</span>` : ''}
+      </footer>
+    </article>
+  ` : `
     <article class="match-card">
       <div class="score-panel">
-        <span class="badge ${row.status === 'live' ? 'live' : ''}">${escapeHtml(row.status_label || row.status || '-')}</span>
+        <span class="badge match-status status-${matchStatusClass(row.status)}">${escapeHtml(row.status_label || row.status || '-')}</span>
         <div class="score">${escapeHtml(row.score_label || '-- : --')}</div>
         <small>${escapeHtml(row.match_code || '')}</small>
       </div>
       <div class="match-info">
-        ${row.tournament_logo_url ? `<img class="tournament-mark" src="${escapeAttr(row.tournament_logo_url)}" alt="โลโก้ ${escapeAttr(row.tournament_name || 'รายการแข่งขัน')}">` : ''}
-        <div class="teams">
-          <span>${escapeHtml(row.team1_name || 'ทีม 1')}</span>
-          <span class="vs">VS</span>
-          <span>${escapeHtml(row.team2_name || 'ทีม 2')}</span>
+        <div class="match-detail-row match-sport-row">
+          <span class="match-detail-label">กีฬา</span>
+          <strong>${escapeHtml(row.sport_name || '-')}</strong>
+        </div>
+        <div class="match-team-row">
+          <span class="match-detail-label">สาขา</span>
+          <div class="teams">
+            <span>${escapeHtml(row.team1_name || 'ทีม 1')}</span>
+            <span class="vs">VS</span>
+            <span>${escapeHtml(row.team2_name || 'ทีม 2')}</span>
+          </div>
+        </div>
+        <div class="match-detail-row match-round-row">
+          <span class="match-detail-label">สาย/กลุ่ม</span>
+          <strong>${escapeHtml(row.round_name || '-')}</strong>
         </div>
         <div class="meta">
-          <span>${escapeHtml(row.sport_name || '')}</span>
           <span>${escapeHtml(row.tournament_name || '')}</span>
           <span>${escapeHtml(row.scheduled_at || 'ยังไม่ระบุเวลา')}</span>
           ${row.venue ? `<span>${escapeHtml(row.venue)}</span>` : ''}
@@ -2269,6 +3064,7 @@ function renderMatchCards(selector, rows) {
       </div>
     </article>
   `).join('');
+  refreshIcons(target);
 }
 
 function renderNewsCards(selector, rows) {
@@ -2280,20 +3076,23 @@ function renderNewsCards(selector, rows) {
   target.innerHTML = rows.map(row => `
     <article class="news-card">
       <div class="news-image">
-        ${row.cover_image_url ? `<img src="${escapeAttr(row.cover_image_url)}" alt="">` : '<span>TECHED SPORT</span>'}
+        ${row.cover_image_url ? `<img src="${escapeAttr(row.cover_image_url)}" alt="">` : '<span>SPORT TOURNAMENT</span>'}
       </div>
       <div class="news-body">
         <span class="badge">${escapeHtml(row.news_type_label || 'ข่าวสาร')}</span>
         <h3>${escapeHtml(row.title || '')}</h3>
         <p>${escapeHtml(row.excerpt || row.body || '')}</p>
-        <button type="button" class="news-read btn ghost">อ่านข่าว ${icon('arrow-up-right')}</button>
+        <a class="news-read btn ghost" href="?view=public-news-detail&amp;id=${encodeURIComponent(row.id)}">อ่านข่าว ${icon('arrow-up-right')}</a>
         <small class="muted">${escapeHtml(row.published_at || row.created_at || '')}</small>
       </div>
     </article>
   `).join('');
   $$('.news-read', target).forEach((button, index) => {
     button.setAttribute('aria-label', `อ่านข่าว ${rows[index].title || ''}`);
-    button.addEventListener('click', () => openNews(rows[index]));
+    button.addEventListener('click', event => {
+      event.preventDefault();
+      openNews(rows[index], rows);
+    });
   });
   refreshIcons(target);
 }
@@ -2332,6 +3131,7 @@ async function deleteRow(action, id, reload) {
 
 function fillForm(selector, row) {
   openEditor(selector.replace('#', ''), row);
+  if (selector === '#sport-form') setSportIconSelection(row.icon);
   if (selector === '#user-form') {
     const form = $(selector);
     if (form.elements.password) form.elements.password.value = '';
