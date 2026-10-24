@@ -80,8 +80,9 @@ async function runNewsUxFlow({ page, base, artifacts, generatedUploads, root, cl
     await page.locator('#news-form [name=excerpt]').fill('ติดตามความพร้อมของทีมและกำหนดการแข่งขัน');
     await page.locator('#news-form [name=body]').fill(body);
     await capture('news-editor-manual-desktop');
-    for (const method of ['match', 'ai', 'manual']) {
-      await page.locator(`[name=news_creation_method][value=${method}]`).check();
+    await expect(page.locator('[name=news_creation_method]')).toHaveCount(0);
+    for (const panel of ['news-competition-panel', 'news-ai-panel', 'news-ai-panel', 'news-competition-panel']) {
+      await page.locator(`#${panel} > summary`).click();
       await expect(page.locator('#news-form [name=title]')).toHaveValue(title);
       await expect(page.locator('#news-form [name=body]')).toHaveValue(body);
     }
@@ -110,7 +111,7 @@ async function runNewsUxFlow({ page, base, artifacts, generatedUploads, root, cl
     await page.locator('#news-form [name=body]').fill(body);
     await page.locator('#news-form [name=source_url]').fill('https://www.rmutt.ac.th/');
 
-    await page.locator('[name=news_creation_method][value=match]').check();
+    await page.locator('#news-competition-panel > summary').click();
     await page.locator('#news-form [name=tournament_id]').selectOption(String(fixture.tournament.id));
     await page.locator('#news-form [name=sport_id]').selectOption(String(fixture.sport.id));
     await page.locator('#news-team-link').selectOption(String(fixture.home.id));
@@ -127,7 +128,8 @@ async function runNewsUxFlow({ page, base, artifacts, generatedUploads, root, cl
     await page.locator('#news-draft-apply').click();
     await confirm('นำร่างมาใช้');
     await expect(page.locator('#news-form [name=body]')).toHaveValue(/ผลยังไม่ได้รับการยืนยัน/);
-    await page.locator('[name=news_creation_method][value=ai]').check();
+    await expect(page.locator('#news-competition-panel')).toHaveAttribute('open', '');
+    await page.locator('#news-ai-panel > summary').click();
     await page.locator('#news-ai-story-type').selectOption('result');
     const aiBeforeUnconfirmed = counts.get('ai.news') || 0;
     await page.locator('#news-ai-button').click();
@@ -142,7 +144,7 @@ async function runNewsUxFlow({ page, base, artifacts, generatedUploads, root, cl
     await page.locator('#news-ai-instruction').fill('ชื่นชมนักกีฬาและขอบคุณผู้ชม');
     await page.locator('#news-ai-button').click();
     await expect(page.locator('#news-draft-source')).toContainText('local-summary');
-    await expect(page.locator('#news-ai-status')).toContainText('ร่างอัตโนมัติ');
+    await expect(page.locator('#news-ai-status')).toContainText('ไม่ได้สร้างด้วย AI');
     await expect(page.locator('#news-form [name=body]')).toHaveValue(contentBeforeAi);
     expect(counts.get('ai.news')).toBe(aiBeforeUnconfirmed + 1);
     await page.locator('#news-draft-apply').click();

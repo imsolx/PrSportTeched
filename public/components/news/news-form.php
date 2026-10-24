@@ -3,16 +3,9 @@
   <input type="hidden" name="status" value="draft">
   <input type="hidden" name="published_at">
   <div class="news-editor-main">
-    <section class="news-editor-section news-method-section">
-      <h3 id="news-method-title">วิธีสร้างข่าว</h3>
-      <div class="news-methods" role="radiogroup" aria-labelledby="news-method-title">
-        <label><input type="radio" name="news_creation_method" value="manual" checked><span><strong>เขียนเอง</strong><small>เขียนและจัดรูปแบบด้วยตนเอง</small></span></label>
-        <label><input type="radio" name="news_creation_method" value="match"><span><strong>จากการแข่งขัน</strong><small>ดึงข้อมูลจากแมตช์ในระบบ</small></span></label>
-        <label><input type="radio" name="news_creation_method" value="ai"><span><strong>ใช้ AI</strong><small>สร้างร่างแล้วตรวจทานก่อนใช้</small></span></label>
-      </div>
-    </section>
     <section class="news-editor-section news-writing-section">
       <?php require __DIR__ . '/news-competition.php'; ?>
+      <?php require __DIR__ . '/news-ai-panel.php'; ?>
       <div class="news-writing-fields">
         <p class="form-error" role="alert" hidden></p>
         <label>หัวข้อข่าว <span class="news-required">*</span><input name="title" required placeholder="กรอกหัวข้อข่าว" autocomplete="off"></label>
@@ -22,7 +15,6 @@
         <?php require __DIR__ . '/news-honor.php'; ?>
       </div>
     </section>
-    <?php require __DIR__ . '/news-ai-panel.php'; ?>
     <?php require __DIR__ . '/news-draft-review.php'; ?>
   </div>
   <aside class="news-editor-inspector" aria-label="รูปปกและการเผยแพร่">

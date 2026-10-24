@@ -146,7 +146,7 @@ function prepareNewsEditor(row) {
     form.elements.department_code.append(new Option(`ข้อมูลเดิม #${row.department_code}`, row.department_code));
     form.elements.department_code.value = row.department_code;
   }
-  form.elements.news_creation_method.value = row?.match_id ? 'match' : 'manual';
+  $('#news-competition-panel').open = Boolean(row?.match_id);
   syncNewsCompetitionOptions('', row || {});
   updateNewsCoverPreview(row?.cover_image_url || '');
   $('#banner-sport').value = '';
@@ -158,26 +158,21 @@ function prepareNewsEditor(row) {
   bannerStudio.coverSource = null;
   bannerStudio.textScales = { sport: 1, headline: 1, subtitle: 1 };
   setBannerTemplate('matchday');
-  $('#news-ai-status').textContent = app.aiSettings?.configured ? `Gemini: ${app.aiSettings.default_model}` : 'พร้อมสร้างร่าง (AI สำรองในระบบ)';
+  $('#news-ai-status').textContent = app.aiSettings?.configured ? `Gemini: ${app.aiSettings.default_model}` : 'ยังไม่ได้เชื่อมต่อ AI — จะใช้แม่แบบในระบบ';
   $('#news-ai-story-type').value = newsMatchIsOfficial(selectedNewsMatch()) ? 'result' : 'preview';
   $('#news-editor-title').textContent = row?.id ? 'แก้ไขข่าว' : 'สร้างข่าว';
-  syncNewsMethod();
+  syncNewsCategory();
   syncNewsPublishingUi();
   newsUi.editing = true;
   newsUi.snapshot = JSON.stringify(newsPayload());
   markNewsDirty();
 }
 
-function syncNewsMethod(event) {
+function syncNewsCategory() {
   const form = $('#news-form');
-  const method = form.elements.news_creation_method.value;
-  if (method !== 'manual') $('#news-competition-panel').open = true;
-  else if (!event || event.target?.name === 'news_creation_method') $('#news-competition-panel').open = false;
-  $('#news-ai-panel').open = method === 'ai';
-  $('#news-from-match-button').hidden = method !== 'match';
   $('#news-honor-help').hidden = form.elements.news_type.value !== 'hall_of_fame';
   $('#news-honor-panel').hidden = form.elements.news_type.value !== 'hall_of_fame';
-  // Switching a method/category never resets any content or reference fields.
+  // Category changes never reset content, references or optional writing tools.
 }
 
 function syncNewsPublishingUi() {
@@ -312,7 +307,7 @@ function bindNewsEditor() {
     markNewsDirty();
   });
   $('#news-form').addEventListener('change', markNewsDirty);
-  $$('[name="news_creation_method"], #news-type-select', $('#news-form')).forEach(field => field.addEventListener('change', syncNewsMethod));
+  $('#news-type-select').addEventListener('change', syncNewsCategory);
   $$('[data-news-back]').forEach(button => button.addEventListener('click', () => showView('news', { history: 'push' })));
   $('#news-preview-button').addEventListener('click', () => showView('news-preview', { history: 'push' }));
   $('#news-preview-back').addEventListener('click', () => showView('news-editor', { history: 'push' }));

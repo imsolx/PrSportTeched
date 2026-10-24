@@ -46,8 +46,9 @@ function bindNewsAi() {
       const fresh = await refreshNewsMatch(id);
       if (newsMatchFingerprint(fresh) !== fingerprint) throw new Error('ผลการแข่งขันเปลี่ยนระหว่างสร้างร่าง กรุณาสร้างใหม่');
       validateNewsAiFacts(result, fresh);
-      $('#news-ai-status').textContent = result.provider === 'google-gemini' ? `Gemini: ${result.model}` : 'ร่างอัตโนมัติในระบบ';
-      stageNewsDraft({ ...result, match_id: id, sourceFingerprint: fingerprint }, `AI · ${result.model || 'local-summary'} · ${newsMatchPair(match)}`, true);
+      const usedAi = result.provider === 'google-gemini';
+      $('#news-ai-status').textContent = usedAi ? `Gemini: ${result.model}` : 'ใช้แม่แบบในระบบ — ไม่ได้สร้างด้วย AI';
+      stageNewsDraft({ ...result, match_id: id, sourceFingerprint: fingerprint }, `${usedAi ? `Gemini · ${result.model}` : 'แม่แบบในระบบ · local-summary'} · ${newsMatchPair(match)}`, true);
     } catch (error) {
       $('#news-ai-status').textContent = 'สร้างร่างไม่สำเร็จ — ลองใหม่หรือใช้ข้อมูลจากระบบ';
       throw error;

@@ -37,7 +37,7 @@ async function applyNewsDraft() {
   bannerStudio.newsSyncSnapshot = newsBannerSourceSnapshot();
   newsUi.pendingDraft = null;
   $('#news-draft-review').hidden = true;
-  syncNewsMethod();
+  syncNewsCategory();
   markNewsDirty();
   form.elements.title.focus();
   toast('นำร่างมาใช้แล้ว แก้ไขข้อความต่อได้ก่อนบันทึก');

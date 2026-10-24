@@ -1,5 +1,5 @@
-<details class="news-editor-section news-disclosure" id="news-ai-panel">
-  <summary><i data-lucide="sparkles"></i><span>AI Newsroom <small>(ถ้ามี)</small></span><i data-lucide="chevron-down"></i></summary>
+<details class="news-disclosure news-writing-assistant" id="news-ai-panel">
+  <summary><i data-lucide="sparkles"></i><span>ให้ AI ช่วยเขียน <small>(เลือกใช้ได้)</small></span><i data-lucide="chevron-down"></i></summary>
   <div class="news-disclosure-body">
     <p class="news-field-help" id="news-ai-source">ใช้แมตช์เดียวกับส่วนเชื่อมข้อมูลการแข่งขัน</p>
     <div class="form-row">
