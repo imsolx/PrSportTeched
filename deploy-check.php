@@ -132,7 +132,7 @@ http_response_code($dbOk ? 200 : 500);
 <body>
 <main>
     <h1>PrSport Deploy Check</h1>
-    <p>ใช้หน้านี้ตรวจหลังอัปโหลดขึ้น InfinityFree แล้วลบไฟล์ <code>deploy-check.php</code> ออกจาก hosting เมื่อเว็บใช้งานได้ปกติ</p>
+    <p>ใช้หน้านี้ตรวจการเชื่อมต่อระหว่าง Render และ Supabase หลัง deploy แล้วควรจำกัดหรือลบไฟล์ <code>deploy-check.php</code> เมื่อระบบใช้งานได้ปกติ</p>
     <table>
         <thead>
         <tr><th>รายการ</th><th>สถานะ</th><th>รายละเอียด</th></tr>
