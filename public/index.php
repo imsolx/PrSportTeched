@@ -16,13 +16,14 @@ $csrf = Auth::csrfToken();
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Prompt:wght@400;500;600;700;800&display=swap">
+  <link rel="stylesheet" href="<?= htmlspecialchars(versioned_asset_url('public/assets/tailwind.css'), ENT_QUOTES, 'UTF-8') ?>">
   <link rel="stylesheet" href="<?= htmlspecialchars(versioned_asset_url('public/assets/app.css'), ENT_QUOTES, 'UTF-8') ?>">
   <link rel="stylesheet" href="<?= htmlspecialchars(versioned_asset_url('public/assets/workspace.css'), ENT_QUOTES, 'UTF-8') ?>">
   <link rel="stylesheet" href="<?= htmlspecialchars(versioned_asset_url('public/assets/modules/news/news.css'), ENT_QUOTES, 'UTF-8') ?>">
   <link rel="stylesheet" href="<?= htmlspecialchars(versioned_asset_url('public/assets/modules/tournaments.css'), ENT_QUOTES, 'UTF-8') ?>">
   <link rel="stylesheet" href="<?= htmlspecialchars(versioned_asset_url('public/assets/modules/admin-users.css'), ENT_QUOTES, 'UTF-8') ?>">
 </head>
-<body>
+<body class="tw:font-sans">
   <header class="topbar">
     <button class="btn icon-button" id="menu-toggle" type="button" aria-label="เปิดเมนู" aria-expanded="false" aria-controls="main-navigation"><i data-lucide="menu"></i></button>
     <button class="brand" type="button" data-view-button="public">
@@ -544,6 +545,7 @@ $csrf = Auth::csrfToken();
   <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/modules/news/news-editor.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
   <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/modules/news/news-drafts.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
   <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/modules/news/news-honor.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
+  <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/modules/news/news-composer.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
   <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/app.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
 </body>
 </html>

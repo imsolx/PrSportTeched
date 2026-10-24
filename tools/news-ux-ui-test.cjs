@@ -22,7 +22,7 @@ async function runNewsUxFlow({ page, base, artifacts, generatedUploads, root, cl
   page.on('response', onResponse);
   const capture = async name => {
     await expect(page.locator('#page-progress')).toBeHidden();
-    await page.evaluate(() => { document.activeElement?.blur(); scrollTo(0, 0); });
+    await page.evaluate(() => { document.activeElement?.blur(); scrollTo({top:0,behavior:'instant'}); });
     await page.screenshot({ path: path.join(artifacts, name + '.png'), animations: 'disabled', style: '#toast { visibility: hidden; }' });
   };
   const checkWidth = async () => expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
@@ -69,7 +69,8 @@ async function runNewsUxFlow({ page, base, artifacts, generatedUploads, root, cl
     await expect(page.locator('#news-form')).toBeVisible();
     await expect(page).toHaveURL(/view=news-editor$/);
     await expect(page.locator('.tab[data-view-button=news]')).toHaveAttribute('aria-current', 'page');
-    await expect(page.locator('#news-ai-panel')).not.toHaveAttribute('open', '');
+    await expect(page.locator('#news-ai-panel')).toHaveAttribute('open', '');
+    await expect(page.locator('#news-competition-panel')).not.toHaveAttribute('open', '');
     await page.locator('#news-save-draft').click();
     await expect(page.locator('#news-form .form-error')).toContainText('หัวข้อข่าว');
     expect(counts.get('news.save') || 0).toBe(0);
@@ -77,6 +78,7 @@ async function runNewsUxFlow({ page, base, artifacts, generatedUploads, root, cl
     const title = 'เตรียมพร้อมการแข่งขันกีฬาคณะ';
     const body = 'ร่วมติดตามการแข่งขันของนักกีฬาในรายการประจำคณะ\n\nทีมงานพร้อมรายงานข่าวและข้อมูลการแข่งขันจากระบบ';
     await page.locator('#news-form [name=title]').fill(title);
+    await page.locator('#news-excerpt-settings > summary').click();
     await page.locator('#news-form [name=excerpt]').fill('ติดตามความพร้อมของทีมและกำหนดการแข่งขัน');
     await page.locator('#news-form [name=body]').fill(body);
     await capture('news-editor-manual-desktop');
@@ -93,6 +95,59 @@ async function runNewsUxFlow({ page, base, artifacts, generatedUploads, root, cl
     expect(article.status).toBe('draft');
     await expect(page).toHaveURL(new RegExp('view=news-editor&id=' + article.id + '$'));
     expect(await page.evaluate(id => request('public.news', { id }), article.id)).toEqual([]);
+
+    // A slow response must not silently mark newer typing as persisted.
+    let releaseSave, reachedSave;
+    const holdSave = new Promise(resolve => {releaseSave=resolve;});
+    const saveReached = new Promise(resolve => {reachedSave=resolve;});
+    const slowSaveRoute = '**/api.php?action=news.save';
+    await page.route(slowSaveRoute, async route => {reachedSave();await holdSave;await route.continue();});
+    await page.locator('#news-save-draft').click();
+    await saveReached;
+    await expect(page.locator('#news-publish-button')).toBeDisabled();
+    const laterBody = body + '\n\nข้อความที่พิมพ์ระหว่างบันทึก';
+    await page.locator('#news-form [name=body]').fill(laterBody);
+    releaseSave();
+    await expect(page.locator('#news-form')).not.toHaveAttribute('aria-busy','true');
+    await expect(page.locator('#news-save-feedback')).toContainText('ยังมีข้อมูล');
+    await expect(page.locator('#news-form [name=body]')).toHaveValue(laterBody);
+    const stored = await page.evaluate(async id => (await request('news.list')).find(row => String(row.id) === String(id)), article.id);
+    expect(stored.body).toBe(body);
+    await page.unroute(slowSaveRoute);
+    await page.locator('#news-form [name=body]').fill(body);
+
+    // The optional topic mode uses the real endpoint without borrowing an unrelated match.
+    await page.locator('[data-news-kind=result]').click();
+    await expect(page.locator('#news-form [name=body]')).toHaveValue(body);
+    await page.locator('[data-news-kind=general]').click();
+    await page.locator('[data-news-ai-open]').click();
+    await page.locator('#news-ai-mode').selectOption('topic');
+    await expect(page.locator('#news-ai-match-fields')).toBeHidden();
+    const topic = 'เชิญร่วมกิจกรรมกีฬาเพื่อสุขภาพ สนามกีฬาคณะ กรุณาติดตามกำหนดการจากผู้จัด';
+    await page.locator('#news-ai-topic').fill(topic);
+    await page.locator('#news-ai-button').click();
+    await expect(page.locator('#news-draft-body')).toHaveValue(topic);
+    await expect(page.locator('#news-form [name=body]')).toHaveValue(body);
+    await expect(page.locator('#news-ai-status')).toContainText('ไม่ได้สร้างด้วย AI');
+    await page.locator('#news-draft-verified').check();
+    await page.locator('#news-draft-append').click();
+    await expect(page.locator('#news-form [name=body]')).toHaveValue(body + '\n\n' + topic);
+    await expect(page.locator('#news-form [name=title]')).toHaveValue(title);
+    await page.locator('#news-form [name=body]').fill(body);
+    await page.locator('#news-ai-button').click();
+    await expect(page.locator('#news-ai-panel')).not.toHaveAttribute('aria-busy', 'true');
+    await expect(page.locator('#news-draft-review')).toBeVisible();
+    await page.locator('#news-draft-verified').check();
+    await page.locator('#news-draft-replace').click();
+    await confirm('กลับ');
+    await expect(page.locator('#news-form [name=body]')).toHaveValue(body);
+    await page.locator('#news-draft-replace').click();
+    await confirm('นำร่างมาใช้');
+    await expect(page.locator('#news-form [name=body]')).toHaveValue(topic);
+    await expect(page.locator('#news-form [name=title]')).toHaveValue(title);
+    await expect(page.locator('#news-form [name=excerpt]')).toHaveValue('ติดตามความพร้อมของทีมและกำหนดการแข่งขัน');
+    await page.locator('#news-form [name=body]').fill(body);
+    await page.locator('#news-ai-mode').selectOption('match');
 
     // Preview uses text-safe DOM and never invokes save/upload/publication.
     const savesBeforePreview = counts.get('news.save');
@@ -112,8 +167,10 @@ async function runNewsUxFlow({ page, base, artifacts, generatedUploads, root, cl
     await page.locator('#news-form [name=source_url]').fill('https://www.rmutt.ac.th/');
 
     await page.locator('#news-competition-panel > summary').click();
-    await page.locator('#news-form [name=tournament_id]').selectOption(String(fixture.tournament.id));
-    await page.locator('#news-form [name=sport_id]').selectOption(String(fixture.sport.id));
+    await page.locator('[data-news-reference=tournament_id]').selectOption(String(fixture.tournament.id));
+    await page.locator('[data-news-reference=sport_id]').selectOption(String(fixture.sport.id));
+    await expect(page.locator('#news-form [name=tournament_id]')).toHaveValue(String(fixture.tournament.id));
+    await expect(page.locator('#news-form [name=sport_id]')).toHaveValue(String(fixture.sport.id));
     await page.locator('#news-team-link').selectOption(String(fixture.home.id));
     await page.locator('#news-match-link').selectOption(String(fixture.scheduled.id));
     await expect(page.locator('#news-match-summary')).toContainText('ยังไม่ยืนยันผล');
@@ -129,7 +186,8 @@ async function runNewsUxFlow({ page, base, artifacts, generatedUploads, root, cl
     await confirm('นำร่างมาใช้');
     await expect(page.locator('#news-form [name=body]')).toHaveValue(/ผลยังไม่ได้รับการยืนยัน/);
     await expect(page.locator('#news-competition-panel')).toHaveAttribute('open', '');
-    await page.locator('#news-ai-panel > summary').click();
+    await page.locator('[data-news-ai-open]').click();
+    await page.locator('#news-ai-options').evaluate(element => {element.open=true;});
     await page.locator('#news-ai-story-type').selectOption('result');
     const aiBeforeUnconfirmed = counts.get('ai.news') || 0;
     await page.locator('#news-ai-button').click();
@@ -139,13 +197,18 @@ async function runNewsUxFlow({ page, base, artifacts, generatedUploads, root, cl
     await page.locator('#news-match-link').selectOption(String(fixture.completed.id));
     await expect(page.locator('#news-match-summary .confirmed')).toHaveText('ยืนยันผลแล้ว');
     await expect(page.locator('#news-match-summary')).toContainText('3 - 1');
+    await expect(page.locator('[data-news-reference=match_id]')).toHaveValue(String(fixture.completed.id));
     const contentBeforeAi = await page.locator('#news-form [name=body]').inputValue();
     await page.locator('#news-ai-tone').selectOption('energetic');
     await page.locator('#news-ai-instruction').fill('ชื่นชมนักกีฬาและขอบคุณผู้ชม');
     await page.locator('#news-ai-button').click();
     await expect(page.locator('#news-draft-source')).toContainText('local-summary');
     await expect(page.locator('#news-ai-status')).toContainText('ไม่ได้สร้างด้วย AI');
+    await page.locator('#news-ai-options').evaluate(element => {element.open=false;});
     await expect(page.locator('#news-form [name=body]')).toHaveValue(contentBeforeAi);
+    await page.setViewportSize({width:1536,height:1024});
+    await capture('news-social-editor-ai-1536');
+    await page.setViewportSize({width:1440,height:1000});
     expect(counts.get('ai.news')).toBe(aiBeforeUnconfirmed + 1);
     await page.locator('#news-draft-apply').click();
     await expect(page.locator('#toast')).toContainText('ทำเครื่องหมายยืนยัน');
@@ -258,6 +321,19 @@ async function runNewsUxFlow({ page, base, artifacts, generatedUploads, root, cl
       await checkWidth();
       await expect(page.locator('#news-publish-button')).toBeInViewport();
       await capture(`news-editor-${width}`);
+      await page.locator('[data-news-ai-open]').click();
+      await expect(page.locator('#news-ai-panel')).toHaveAttribute('role', 'dialog');
+      await expect(page.locator('#news-ai-backdrop')).toBeVisible();
+      await page.locator('#news-ai-mode').selectOption('topic');
+      await page.locator('#news-ai-topic').fill('ข้อมูลร่างยังอยู่เมื่อปิดผู้ช่วย');
+      await capture(`news-ai-drawer-${width}`);
+      await page.locator('#news-ai-close').click();
+      await expect(page.locator('#news-ai-backdrop')).toBeHidden();
+      await expect(page.locator('#news-form [name=body]')).toHaveValue(editedBody);
+      await page.locator('[data-news-ai-open]').click();
+      await expect(page.locator('#news-ai-topic')).toHaveValue('ข้อมูลร่างยังอยู่เมื่อปิดผู้ช่วย');
+      await page.keyboard.press('Escape');
+      await expect(page.locator('#news-ai-backdrop')).toBeHidden();
       await page.locator('#banner-open-button').click();
       await expect(page.locator('#view-news-banner')).toBeVisible();
       await checkWidth();
@@ -283,6 +359,11 @@ async function runNewsUxFlow({ page, base, artifacts, generatedUploads, root, cl
     await page.locator('#news-honor-achievement').fill('รางวัลนักกีฬายอดเยี่ยม');
     await page.locator('#news-honor-apply').click();
     await expect(page.locator('#news-form [name=body]')).toHaveValue(/กิตติ ใจดี/);
+    await page.locator('#news-file').setInputFiles({ name: 'news-ux-upload.png', mimeType: 'image/png', buffer: png });
+    await expect(page.locator('#news-cover-preview img')).toBeVisible();
+    await page.locator('#news-cover-remove').click();
+    await expect(page.locator('#news-cover-preview img')).toHaveCount(0);
+    await expect(page.locator('#news-cover-url')).toHaveValue('');
     await page.locator('#news-file').setInputFiles({ name: 'news-ux-upload.png', mimeType: 'image/png', buffer: png });
     await expect(page.locator('#news-cover-preview img')).toBeVisible();
     honor = await saveDraft();
@@ -331,6 +412,10 @@ async function runNewsUxFlow({ page, base, artifacts, generatedUploads, root, cl
       }, fixture);
     }
     console.log('PASS news UX: manual/match/AI review, unconfirmed-result guard, preserved text, Banner Studio/export/upload, draft/preview/publication/unpublication, pin, archive, XSS-safe preview, filters, discard/save errors, responsive 320/390/768/1440.');
+  } catch (error) {
+    await page.screenshot({path:path.join(artifacts,'news-failure.png'),animations:'disabled'}).catch(()=>{});
+    console.error('News failure state:', await page.evaluate(()=>({pending:Boolean(newsUi.pendingDraft),ai:newsUi.pendingDraft?.ai,verified:document.querySelector('#news-draft-verified').checked,error:document.querySelector('#news-ai-error').textContent,toast:document.querySelector('#toast').textContent,mode:document.querySelector('#news-ai-mode').value,dialogs:[...document.querySelectorAll('dialog[open]')].map(e=>e.textContent)})));
+    throw error;
   } finally {
     await Promise.all(uploads);
     page.off('request', onRequest);

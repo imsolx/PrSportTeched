@@ -22,6 +22,7 @@ $backUrl = $appBase . '/?view=official';
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>บันทึกคะแนนสะสม (SCORE)</title>
+  <link rel="stylesheet" href="<?= htmlspecialchars($assetBase . '/tailwind.css?v=' . (string) filemtime(__DIR__ . '/../assets/tailwind.css'), ENT_QUOTES, 'UTF-8') ?>">
   <link rel="stylesheet" href="<?= htmlspecialchars($assetBase . '/scoring/score.css?v=' . (string) filemtime(__DIR__ . '/../assets/scoring/score.css'), ENT_QUOTES, 'UTF-8') ?>">
 </head>
 <body>

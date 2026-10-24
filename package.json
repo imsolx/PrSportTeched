@@ -1,11 +1,16 @@
 {
   "scripts": {
+    "build": "npm run build:css",
+    "build:css": "node tools/build-css.cjs",
+    "dev:css": "node tools/build-css.cjs --watch",
     "test:ui": "node tools/ui-smoke.cjs"
   },
   "dependencies": {
     "lucide": "^0.468.0"
   },
   "devDependencies": {
-    "@playwright/test": "^1.63.0"
+    "@playwright/test": "^1.63.0",
+    "@tailwindcss/cli": "^4.3.3",
+    "tailwindcss": "^4.3.3"
   }
 }

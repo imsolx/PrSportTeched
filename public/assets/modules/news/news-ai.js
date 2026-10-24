@@ -1,4 +1,4 @@
-// Optional AI newsroom. Source selectors live only in news-competition.php; the API contract is unchanged.
+// Optional AI newsroom. Mirrored selectors share the original competition controls.
 function syncNewsAiOptions() {
   syncNewsCompetitionOptions();
 }
@@ -16,31 +16,68 @@ function validateNewsAiFacts(draft, match) {
 
 function bindNewsAi() {
   bindTaskButton('#news-ai-button', async () => {
+    $('#news-ai-error').hidden = true;
+    const reviewControls = $$('button,input,textarea', $('#news-draft-review'));
+    reviewControls.forEach(control => {control.disabled = true;});
+    $('#news-draft-review').hidden = true;
+    $('#news-ai-panel').setAttribute('aria-busy', 'true');
+    $('#news-ai-status').textContent = 'กำลังสร้างร่าง…';
+    try {
+      await generateNewsAiDraft();
+    } catch (error) {
+      $('#news-ai-status').textContent = 'สร้างร่างไม่สำเร็จ — ลองใหม่หรือใช้ข้อมูลจากระบบ';
+      $('#news-ai-error').textContent = error.message;
+      $('#news-ai-error').hidden = false;
+      throw error;
+    } finally {
+      reviewControls.forEach(control => {control.disabled = false;});
+      $('#news-draft-review').hidden = !newsUi.pendingDraft;
+      $('#news-ai-panel').removeAttribute('aria-busy');
+    }
+  });
+}
+
+async function generateNewsAiDraft() {
+    const mode = $('#news-ai-mode').value;
+    const token = ++newsUi.generation;
+    const length = {short:'สั้น กระชับประมาณหนึ่งย่อหน้า',medium:'ปานกลางประมาณสองถึงสามย่อหน้า',long:'รายละเอียดครบประมาณสี่ถึงห้าย่อหน้า'}[$('#news-ai-length').value];
+    const emphasis = $('#news-ai-instruction').value.trim();
+    if (mode === 'topic') {
+      const topic = $('#news-ai-topic').value.trim();
+      if (!topic) throw new Error('กรุณาระบุหัวข้อหรือข้อมูลจริงก่อนสร้างร่างข่าว');
+      const instruction = `[GENERAL_TOPIC]\n${topic}\n\nประเด็นเน้น: ${emphasis}\nความยาว: ${length}`;
+      const result = await request('ai.news', {match_id:'', sport_id:'', tournament_id:'', story_type:'preview', tone:$('#news-ai-tone').value, instruction});
+      if (!newsUi.editing || token !== newsUi.generation || $('#news-ai-mode').value !== mode || $('#news-ai-topic').value.trim() !== topic) {
+        $('#news-ai-status').textContent = 'ข้อมูลเปลี่ยนแล้ว กรุณาสร้างร่างใหม่';
+        return;
+      }
+      const usedAi = result.provider === 'google-gemini';
+      $('#news-ai-status').textContent = usedAi ? `Gemini: ${result.model}` : 'ใช้แม่แบบในระบบ — ไม่ได้สร้างด้วย AI';
+      stageNewsDraft({...result, match_id:'', general:true}, usedAi ? `Gemini · ${result.model} · ข้อมูลหัวข้อที่คุณระบุ` : 'แม่แบบในระบบ · local-summary · ข้อมูลหัวข้อที่คุณระบุ', true);
+      return;
+    }
     const id = $('#news-match-link').value;
     if (!id) {
-      $('#news-competition-panel').open = true;
-      $('#news-match-link').focus();
+      $('[data-news-reference=match_id]').focus();
       throw new Error('กรุณาเลือกแมตช์อ้างอิงก่อนใช้ AI');
     }
-    const token = ++newsUi.generation;
     const match = await refreshNewsMatch(id);
     const story = $('#news-ai-story-type').value;
     if (match.status === 'completed' && !newsMatchIsOfficial(match)) throw new Error('แมตช์จบแล้วแต่ผลยังไม่ยืนยัน กรุณาใช้ร่างข้อมูลจากระบบก่อนยืนยันผล');
     if (story === 'result' && !newsMatchIsOfficial(match)) throw new Error('ผลยังไม่ยืนยัน จึงสร้างข่าวสรุปผลทางการไม่ได้ กรุณาเลือกรูปแบบก่อนแข่งหรือไฮไลต์');
     if (!match.team1_id || !match.team2_id) throw new Error('AI เดิมไม่มีข้อมูลทีมครบสำหรับแมตช์นี้ กรุณาใช้ “สร้างร่างจากแมตช์” เพื่ออ้างข้อมูลจริงโดยไม่สร้างรายชื่อขึ้นเอง');
     const fingerprint = newsMatchFingerprint(match);
-    $('#news-ai-status').textContent = 'กำลังสร้างร่าง…';
-    try {
       const result = await request('ai.news', {
         sport_id: match.sport_id || '',
         tournament_id: match.tournament_id || '',
         match_id: id,
         story_type: story,
         tone: $('#news-ai-tone').value,
-        instruction: $('#news-ai-instruction').value,
+        instruction: `${emphasis}\nความยาว: ${length}`,
       });
-      if (!newsUi.editing || token !== newsUi.generation || $('#news-match-link').value !== id) {
+      if (!newsUi.editing || token !== newsUi.generation || $('#news-match-link').value !== id || $('#news-ai-mode').value !== mode) {
         toast('แหล่งข้อมูลหรือหน้าที่ใช้งานเปลี่ยนแล้ว จึงไม่นำร่างเก่ามาแสดง', true);
+        $('#news-ai-status').textContent = 'ข้อมูลเปลี่ยนแล้ว กรุณาสร้างร่างใหม่';
         return;
       }
       const fresh = await refreshNewsMatch(id);
@@ -49,9 +86,4 @@ function bindNewsAi() {
       const usedAi = result.provider === 'google-gemini';
       $('#news-ai-status').textContent = usedAi ? `Gemini: ${result.model}` : 'ใช้แม่แบบในระบบ — ไม่ได้สร้างด้วย AI';
       stageNewsDraft({ ...result, match_id: id, sourceFingerprint: fingerprint }, `${usedAi ? `Gemini · ${result.model}` : 'แม่แบบในระบบ · local-summary'} · ${newsMatchPair(match)}`, true);
-    } catch (error) {
-      $('#news-ai-status').textContent = 'สร้างร่างไม่สำเร็จ — ลองใหม่หรือใช้ข้อมูลจากระบบ';
-      throw error;
-    }
-  });
 }

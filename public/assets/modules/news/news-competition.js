@@ -92,6 +92,7 @@ function syncNewsCompetitionOptions(source = '', record = null) {
   const matches = scoped.filter(row => !teamId || [row.team1_id, row.team2_id].map(String).includes(teamId));
   setNewsReferenceOptions(form.elements.match_id, matches.map(row => ({ id: row.id, name: row.display_label })), 'เลือกแมตช์อ้างอิง', values.match_id, preserve);
   renderNewsMatchSummary();
+  syncNewsAiReferences();
 }
 
 function renderNewsMatchSummary() {
@@ -101,7 +102,7 @@ function renderNewsMatchSummary() {
   $('#news-from-match-button').disabled = !match;
   if (!match) {
     target.innerHTML = '<p>เลือกแมตช์เพื่อดูทีม วันแข่งขัน และผลจากระบบ</p>';
-    source.textContent = 'ยังไม่ได้เลือกแมตช์ — เปิดส่วนเชื่อมข้อมูลการแข่งขันเพื่อเลือกแหล่งข้อมูล';
+    source.textContent = 'เลือกทัวร์นาเมนต์ กีฬา หรือแมตช์ด้านบน เพื่อใช้ข้อมูลจริงจากระบบ';
     return;
   }
   const official = newsMatchIsOfficial(match);
@@ -129,6 +130,7 @@ function buildNewsMatchDraft(match) {
 function bindNewsCompetition() {
   ['tournament_id', 'sport_id', 'team_id', 'match_id'].forEach(key => {
     $('#news-form').elements[key].addEventListener('change', () => {
+      newsUi.generation++;
       syncNewsCompetitionOptions(key.replace('_id', ''));
       markNewsDirty();
     });

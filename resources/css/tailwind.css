@@ -1,0 +1,15 @@
+/* Prefix utilities to avoid collisions with existing JS hooks such as .grid.
+ * Keep the application's own resets instead of Tailwind Preflight. */
+@layer theme, base, components, utilities;
+/* Shared theme tokens must also exist for @apply in separate CSS outputs. */
+@import "tailwindcss/theme.css" layer(theme) prefix(tw) theme(static);
+@import "tailwindcss/utilities.css" layer(utilities) prefix(tw) source(none);
+
+@source "../../public/**/*.php";
+@source "../../public/assets/**/*.js";
+
+@theme inline {
+  --font-sans: "Prompt", "Sarabun", "Noto Sans Thai", Tahoma, sans-serif;
+  --color-brand: #061f42;
+  --color-accent: #f4c400;
+}

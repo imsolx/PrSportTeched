@@ -1,0 +1,94 @@
+/* Source stylesheet. Run npm run build:css after editing. */
+@reference "../tailwind.css";
+
+/* Tournament pages use the shared semantic palette and existing components. */
+#view-matches { @apply tw:min-w-[0px]; }
+#tournament-list-page > .section-head h2,
+#tournament-create-page > .section-head h2,
+.tournament-dashboard-heading h2 { @apply tw:m-[0px]; color: var(--primary); @apply tw:text-[26px]; }
+#tournament-list-page > .section-head p,
+#tournament-create-page > .section-head p { margin: 4px 0 0; }
+.tournament-list-section > .data-heading { @apply tw:mb-[16px]; }
+#tournaments-table table { @apply tw:min-w-[720px]; }
+#tournaments-table td[data-column="academic_year"],
+#tournaments-table td[data-column="sport_count"],
+#tournaments-table td[data-column="team_count"] { @apply tw:whitespace-nowrap; }
+#tournaments-table td[data-column="name"] { @apply tw:min-w-[220px]; @apply tw:max-w-[460px]; font-weight: 600; }
+#tournaments-table td.action-cell { @apply tw:whitespace-nowrap; }
+#tournaments-table th:last-child,
+#tournaments-table td.action-cell { @apply tw:w-[190px]; @apply tw:min-w-[190px]; }
+#tournaments-table .row-actions { @apply tw:inline-flex; @apply tw:ml-[8px]; vertical-align: middle; }
+.tournament-dashboard-heading { @apply tw:items-end; @apply tw:gap-[24px]; }
+.tournament-dashboard-heading > div:first-child { @apply tw:min-w-[0px]; }
+.tournament-dashboard-heading > div:first-child > .btn { margin: -8px 0 14px -12px; }
+.tournament-dashboard-heading h2 { overflow-wrap: anywhere; }
+.tournament-dashboard-heading p { margin: 6px 0 0; }
+.tournament-status-strip { @apply tw:grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 24px 0 14px; padding: 18px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.tournament-status-strip > div { padding: 0 22px; border-left: 1px solid var(--line); }
+.tournament-status-strip > div:first-child { @apply tw:pl-[0px]; border-left: 0; }
+.tournament-status-strip dt { @apply tw:mb-[6px]; color: var(--muted); @apply tw:text-[12px]; }
+.tournament-status-strip dd { @apply tw:m-[0px]; color: var(--primary); font-weight: 700; }
+.tournament-summary-line { color: var(--muted); @apply tw:text-[13px]; }
+.tournament-readiness-bar { @apply tw:flex; @apply tw:flex-wrap; @apply tw:items-center; gap: 8px 18px; margin: 18px 0 24px; padding: 14px 16px; background: var(--color-surface); border: 1px solid var(--line); }
+.tournament-readiness-bar > strong { @apply tw:text-[12px]; }
+.readiness-link { @apply tw:inline-flex; @apply tw:items-center; @apply tw:gap-[6px]; @apply tw:min-h-[32px]; padding: 3px 0; border: 0; color: var(--color-warning-fg); background: transparent; font: inherit; @apply tw:text-[12px]; @apply tw:text-left; @apply tw:cursor-pointer; }
+.readiness-link.done { color: var(--color-success-fg); }
+.readiness-link:hover { text-decoration: underline; }
+.readiness-link svg { @apply tw:w-[16px]; @apply tw:h-[16px]; flex-shrink: 0; }
+.tournament-tools { @apply tw:flex; @apply tw:flex-wrap; gap: 4px 20px; margin: 0 0 24px; border-bottom: 1px solid var(--line); }
+.tournament-tools .btn { @apply tw:min-h-[46px]; padding: 10px 2px; border: 0; border-bottom: 3px solid transparent; @apply tw:rounded-[0px]; color: var(--muted); background: transparent; }
+.tournament-tools .btn:hover { color: var(--primary); background: transparent; }
+.tournament-tools .btn.active { border-bottom-color: var(--primary); color: var(--primary); font-weight: 700; }
+#tournament-dashboard-page .workflow-content { @apply tw:w-[100%]; }
+#tournament-dashboard-page .workflow-stage-head { @apply tw:items-center; }
+#tournament-dashboard-page .workflow-stage-head h3 { scroll-margin-top: 110px; }
+#tournament-dashboard-page #match-assignment-panel:not([hidden]) { @apply tw:block; }
+#tournament-dashboard-page #fixture-generator { border-top: 0; }
+#tournament-dashboard-page #workflow-departments-section { @apply tw:mt-[28px]; }
+.tournament-create-steps { @apply tw:flex; @apply tw:gap-[0px]; margin: 26px 0; @apply tw:p-[0px]; list-style: none; border-bottom: 1px solid var(--line); }
+.tournament-create-steps li { @apply tw:flex; flex: 1; @apply tw:items-center; @apply tw:gap-[10px]; padding: 12px 14px 16px; border-bottom: 3px solid transparent; color: var(--muted); font-weight: 600; }
+.tournament-create-steps li span { @apply tw:grid; @apply tw:w-[28px]; @apply tw:h-[28px]; @apply tw:place-items-center; border: 1px solid var(--color-border-control); border-radius: 50%; @apply tw:text-[12px]; }
+.tournament-create-steps li.active { color: var(--primary); border-bottom-color: var(--primary); }
+.tournament-create-steps li.active span { color: #fff; border-color: var(--primary); background: var(--primary); }
+.tournament-create-body { @apply tw:max-w-[850px]; }
+.tournament-create-body .editor-form { @apply tw:p-[26px]; border: 1px solid var(--line); border-radius: var(--radius); background: var(--color-surface); }
+.tournament-form-part { @apply tw:grid; @apply tw:gap-[16px]; @apply tw:min-w-[0px]; }
+.tournament-form-part h3 { @apply tw:m-[0px]; color: var(--primary); @apply tw:text-[20px]; }
+.tournament-form-part p { @apply tw:m-[0px]; }
+.tournament-form-part label { @apply tw:m-[0px]; }
+.tournament-form-part + .tournament-form-part { @apply tw:mt-[22px]; }
+.create-only { @apply tw:hidden; }
+.tournament-create-form .create-only { @apply tw:block; }
+.tournament-create-form button.create-only { @apply tw:inline-flex; }
+.tournament-create-form .tournament-form-part { @apply tw:mt-[0px]; }
+.tournament-create-form .tournament-edit-status { @apply tw:hidden; }
+.tournament-create-form .modal-actions { @apply tw:justify-end; margin: 24px 0 0; padding: 18px 0 0; border-top: 1px solid var(--line); }
+#tournament-create-review dl { margin: 8px 0; @apply tw:p-[16px]; background: var(--color-surface-subtle); }
+#tournament-create-review dl > div + div { @apply tw:mt-[12px]; }
+#tournament-create-review dt { color: var(--muted); @apply tw:text-[12px]; }
+#tournament-create-review dd { margin: 3px 0 0; overflow-wrap: anywhere; }
+
+@media (max-width: 900px) {
+  .tournament-dashboard-heading { @apply tw:items-stretch; }
+  .tournament-dashboard-heading .tournament-workspace-controls { @apply tw:w-[100%]; }
+  .tournament-dashboard-heading .tournament-workspace-controls label { flex: 1; }
+  .tournament-status-strip > div { padding-inline: 14px; }
+}
+@media (max-width: 600px) {
+  #tournament-list-page > .section-head h2,
+  #tournament-create-page > .section-head h2,
+  .tournament-dashboard-heading h2 { @apply tw:text-[23px]; }
+  .tournament-status-strip { grid-template-columns: 1fr; @apply tw:gap-[13px]; padding-block: 16px; }
+  .tournament-status-strip > div,
+  .tournament-status-strip > div:first-child { @apply tw:grid; grid-template-columns: minmax(110px, .85fr) minmax(0, 1.15fr); @apply tw:[align-items:start]; @apply tw:gap-[12px]; @apply tw:p-[0px]; border: 0; }
+  .tournament-status-strip dt { @apply tw:m-[0px]; }
+  .tournament-readiness-bar { gap: 6px 14px; @apply tw:p-[12px]; }
+  .tournament-readiness-bar > strong { @apply tw:w-[100%]; }
+  .tournament-tools { gap: 0 16px; }
+  .tournament-tools .btn { flex: 0 0 auto; @apply tw:min-h-[44px]; }
+  #tournament-dashboard-page .workflow-stage-head { @apply tw:items-stretch; @apply tw:flex-col; }
+  .tournament-create-steps li { @apply tw:flex-col; @apply tw:gap-[7px]; padding-inline: 5px; @apply tw:text-[11px]; @apply tw:text-center; }
+  .tournament-create-body .editor-form { padding: 18px 14px; }
+  .tournament-create-form .modal-actions { @apply tw:gap-[9px]; }
+  .tournament-create-form .modal-actions .btn { @apply tw:w-[100%]; }
+}

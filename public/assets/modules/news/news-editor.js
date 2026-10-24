@@ -32,6 +32,7 @@ function isNewsDirty() {
 
 function markNewsDirty() {
   $('#news-save-feedback').textContent = isNewsDirty() ? 'มีการเปลี่ยนแปลงที่ยังไม่บันทึก' : newsUi.record?.id ? 'บันทึกแล้ว' : 'ยังไม่ได้บันทึก';
+  syncNewsComposer();
 }
 
 async function guardNewsNavigation(name, options = {}) {
@@ -45,8 +46,8 @@ async function guardNewsNavigation(name, options = {}) {
   const replacing = Object.prototype.hasOwnProperty.call(options, 'newsRecord');
   if (isNewsEditorView(name) && !replacing) return true;
   if (name === app.currentView && !replacing) return true;
-  if ($('#news-form').dataset.busy === 'true' || newsUi.confirming) {
-    toast('กำลังบันทึก กรุณารอสักครู่', true);
+  if ($('#news-form').dataset.busy === 'true' || newsUi.confirming || newsUi.reviewing) {
+    toast(newsUi.reviewing ? 'กำลังตรวจทานร่าง กรุณารอสักครู่' : 'กำลังบันทึก กรุณารอสักครู่', true);
     return false;
   }
   if (isNewsDirty()) {
@@ -63,6 +64,7 @@ async function guardNewsNavigation(name, options = {}) {
   }
   newsUi.editing = false;
   newsUi.generation++;
+  closeNewsAiPanel();
   return true;
 }
 
@@ -130,11 +132,17 @@ function prepareNewsEditor(row) {
   newsUi.pendingDraft = null;
   newsUi.appliedDraft = null;
   newsUi.bannerDirty = false;
+  newsUi.kind = row?.news_type === 'hall_of_fame' ? 'honor' : 'general';
   newsUi.generation++;
   $('#news-draft-review').hidden = true;
   $('.form-error', form).hidden = true;
-  $('#news-ai-panel').open = false;
+  $('#news-ai-panel').open = !matchMedia('(max-width: 900px)').matches;
+  syncNewsAiDrawer();
+  $('#news-ai-mode').value = 'match';
+  $('#news-ai-options').open = false;
+  syncNewsAiMode();
   $('#news-advanced-settings').open = false;
+  $('#news-excerpt-settings').open = Boolean(row?.excerpt);
   $('#news-template-select').value = '';
   for (const key of newsPayloadKeys) {
     const field = form.elements[key];
@@ -146,7 +154,7 @@ function prepareNewsEditor(row) {
     form.elements.department_code.append(new Option(`ข้อมูลเดิม #${row.department_code}`, row.department_code));
     form.elements.department_code.value = row.department_code;
   }
-  $('#news-competition-panel').open = Boolean(row?.match_id);
+  $('#news-competition-panel').open = false;
   syncNewsCompetitionOptions('', row || {});
   updateNewsCoverPreview(row?.cover_image_url || '');
   $('#banner-sport').value = '';
@@ -160,7 +168,7 @@ function prepareNewsEditor(row) {
   setBannerTemplate('matchday');
   $('#news-ai-status').textContent = app.aiSettings?.configured ? `Gemini: ${app.aiSettings.default_model}` : 'ยังไม่ได้เชื่อมต่อ AI — จะใช้แม่แบบในระบบ';
   $('#news-ai-story-type').value = newsMatchIsOfficial(selectedNewsMatch()) ? 'result' : 'preview';
-  $('#news-editor-title').textContent = row?.id ? 'แก้ไขข่าว' : 'สร้างข่าว';
+  $('#news-editor-title').textContent = row?.id ? 'แก้ไขข่าวประชาสัมพันธ์' : 'สร้างข่าวประชาสัมพันธ์';
   syncNewsCategory();
   syncNewsPublishingUi();
   newsUi.editing = true;
@@ -173,15 +181,17 @@ function syncNewsCategory() {
   $('#news-honor-help').hidden = form.elements.news_type.value !== 'hall_of_fame';
   $('#news-honor-panel').hidden = form.elements.news_type.value !== 'hall_of_fame';
   // Category changes never reset content, references or optional writing tools.
+  syncNewsComposer();
 }
 
 function syncNewsPublishingUi() {
   const status = $('#news-form').elements.status.value || 'draft';
   const badge = $('#news-editor-status');
   badge.className = `status-badge news-status-${['draft', 'published', 'archived'].includes(status) ? status : 'draft'}`;
-  badge.textContent = workspace.labels[status] || 'ฉบับร่าง';
+  badge.textContent = newsUi.record?.id ? workspace.labels[status] || 'ฉบับร่าง' : 'ยังไม่บันทึก';
   $('#news-save-draft span').textContent = status === 'published' ? 'ยกเลิกเผยแพร่' : 'บันทึกร่าง';
   $('#news-publish-button span').textContent = status === 'published' ? 'บันทึกการแก้ไข' : 'เผยแพร่';
+  syncNewsComposer();
 }
 
 function validateNewsEditor() {
@@ -211,7 +221,7 @@ function validateNewsEditor() {
 
 async function saveNewsEditor(status) {
   const form = $('#news-form');
-  if (form.dataset.busy === 'true' || newsUi.confirming) return;
+  if (form.dataset.busy === 'true' || newsUi.confirming || newsUi.reviewing) return;
   $('.form-error', form).hidden = true;
   try { validateNewsEditor(); } catch (error) {
     $('.form-error', form).textContent = error.message;
@@ -231,6 +241,8 @@ async function saveNewsEditor(status) {
     } finally { newsUi.confirming = false; }
   }
   $('#news-save-feedback').textContent = 'กำลังบันทึก…';
+  const actions = $$('.news-publish-actions button', $('#view-news-editor'));
+  actions.forEach(button => {button.disabled = true;});
   await runForm(form, async () => {
     if (status === 'published' && newsUi.appliedDraft?.match_id) {
       if ($('#news-match-link').value !== String(newsUi.appliedDraft.match_id)) throw new Error('แมตช์อ้างอิงเปลี่ยนจากร่างที่นำมาใช้ กรุณาตรวจทานและสร้างร่างใหม่ก่อนเผยแพร่');
@@ -240,6 +252,8 @@ async function saveNewsEditor(status) {
     const file = $('#news-file').files[0];
     if (file) {
       const upload = await request('news.upload', { data_url: await fileToDataUrl(file), file_name: file.name });
+      // Keep a newly selected file if the user replaced it while this upload was running.
+      if ($('#news-file').files[0] !== file) throw new Error('รูปปกเปลี่ยนระหว่างอัปโหลด กรุณาบันทึกอีกครั้งเพื่อใช้รูปที่เลือกล่าสุด');
       $('#news-cover-url').value = upload.url;
       $('#news-file').value = '';
       updateNewsCoverPreview(upload.url);
@@ -251,16 +265,27 @@ async function saveNewsEditor(status) {
     form.elements.id.value = result.id;
     form.elements.status.value = result.status;
     form.elements.published_at.value = result.published_at || '';
-    if (result.slug) form.elements.slug.value = result.slug;
+    if (result.slug && form.elements.slug.value === payload.slug) form.elements.slug.value = result.slug;
     newsUi.record = { ...payload, ...result };
-    newsUi.snapshot = JSON.stringify(newsPayload());
+    // A response only acknowledges the submitted values, not edits typed during the request.
+    for (const key of newsPayloadKeys) {
+      if (['id', 'status', 'published_at', 'slug'].includes(key)) continue;
+      const field = form.elements[key];
+      const unchanged = field.type === 'checkbox' ? field.checked === payload[key] : field.value === String(payload[key]);
+      if (unchanged && result[key] !== undefined) {
+        if (field.type === 'checkbox') field.checked = Number(result[key]) === 1;
+        else field.value = result[key] ?? '';
+      }
+    }
+    newsUi.snapshot = JSON.stringify(Object.fromEntries(newsPayloadKeys.map(key => [key, key === 'is_pinned' ? Boolean(Number(newsUi.record[key])) : String(newsUi.record[key] ?? '')])));
     syncNewsEditorRoute();
     syncNewsPublishingUi();
-    $('#news-editor-title').textContent = 'แก้ไขข่าว';
+    $('#news-editor-title').textContent = 'แก้ไขข่าวประชาสัมพันธ์';
     const feedback = status === 'published' ? 'บันทึกและเผยแพร่แล้ว' : 'บันทึกฉบับร่างแล้ว';
     $('#news-save-feedback').textContent = isNewsDirty() ? feedback + ' · ยังมีข้อมูลที่ยังไม่ได้นำมาใช้' : feedback;
     toast(status === 'published' ? 'เผยแพร่ข่าวแล้ว' : 'บันทึกฉบับร่างแล้ว');
   });
+  actions.forEach(button => {button.disabled = false;});
   if (!$('.form-error', form).hidden) $('#news-save-feedback').textContent = 'บันทึกไม่สำเร็จ ข้อมูลในฟอร์มยังอยู่';
 }
 
@@ -268,8 +293,10 @@ function updateNewsCoverPreview(value = '') {
   const source = safeNewsUrl(value, true);
   const host = $('#news-cover-preview');
   host.replaceChildren();
+  $('#news-cover-remove').hidden = !source;
+  host.classList.toggle('news-has-cover', Boolean(source));
   if (!source) {
-    host.innerHTML = `${icon('image')}<span>ยังไม่มีรูปปก</span><small>อัตราส่วนแนะนำ 16:9</small>`;
+    host.innerHTML = `${icon('image')}<span>เพิ่มรูปภาพหน้าปกข่าว</span><small>ลากและวางไฟล์ หรือคลิกเพื่อเลือกไฟล์</small>`;
     refreshIcons(host);
     return;
   }
@@ -284,13 +311,16 @@ function updateNewsCoverPreview(value = '') {
 }
 
 async function showNewsPreview() {
+  if (matchMedia('(max-width: 900px)').matches) closeNewsAiPanel();
   const form = $('#news-form');
   const payload = newsPayload();
   let cover = safeNewsUrl(payload.cover_image_url, true);
   if ($('#news-file').files[0]) cover = await fileToDataUrl($('#news-file').files[0]);
   const target = $('#news-preview-content');
   const source = safeNewsUrl(payload.source_url);
-  target.innerHTML = `<article class="news-preview-article"><header><span class="news-preview-category">${escapeHtml(newsTypeLabel(payload.news_type))}</span><h1>${escapeHtml(payload.title || 'ยังไม่มีหัวข้อข่าว')}</h1>${payload.excerpt ? `<p class="news-preview-lead">${escapeHtml(payload.excerpt)}</p>` : ''}<p class="news-field-help">${escapeHtml(workspace.labels[payload.status] || 'ฉบับร่าง')}${payload.published_at ? ' · ' + escapeHtml(formatArticleDate(payload.published_at)) : ' · ยังไม่เผยแพร่'}</p></header>${cover ? `<figure><img src="${escapeAttr(cover)}" alt="รูปปกข่าว"></figure>` : ''}<div class="article-body">${formatArticleBody(payload.body || '')}</div>${source ? `<a class="btn" href="${escapeAttr(source)}" target="_blank" rel="noopener noreferrer">${icon('external-link')}<span>เว็บไซต์ที่เกี่ยวข้อง</span></a>` : ''}</article>`;
+  const publishedAt = newsUi.record?.status === 'published' ? newsUi.record.published_at : '';
+  const savedStatus = newsUi.record?.status || 'draft';
+  target.innerHTML = `<article class="news-preview-article news-feed-post"><header class="news-post-identity"><span class="news-post-avatar" aria-hidden="true">TECH<span>ED</span></span><div><strong>TECHED SPORT</strong><p>${escapeHtml(newsTypeLabel(payload.news_type))} · ${publishedAt ? escapeHtml(formatArticleDate(publishedAt)) : escapeHtml(workspace.labels[savedStatus] || 'ฉบับร่าง') + ' · ยังไม่เผยแพร่'}${isNewsDirty() ? ' · มีการแก้ไขที่ยังไม่บันทึก' : ''}</p></div></header><div class="news-feed-copy"><h1>${escapeHtml(payload.title || 'ยังไม่มีหัวข้อข่าว')}</h1>${payload.excerpt ? `<p class="news-preview-lead">${escapeHtml(payload.excerpt)}</p>` : ''}<div class="article-body">${formatArticleBody(payload.body || '')}</div>${source ? `<a class="btn" href="${escapeAttr(source)}" target="_blank" rel="noopener noreferrer">${icon('external-link')}<span>เว็บไซต์ที่เกี่ยวข้อง</span></a>` : ''}</div>${cover ? `<figure><img src="${escapeAttr(cover)}" alt="รูปปกข่าว"></figure>` : ''}</article>`;
   refreshIcons(target);
   newsUi.lastUrl = location.pathname + location.search;
 }
@@ -298,6 +328,7 @@ async function showNewsPreview() {
 function bindNewsEditor() {
   bindNewsManagement();
   bindNewsCompetition();
+  bindNewsComposer();
   $('#news-form').addEventListener('submit', event => {
     event.preventDefault();
     saveNewsEditor(event.submitter?.dataset.newsSave || 'draft');
@@ -325,6 +356,7 @@ function bindNewsCoverInputs() {
     if (!file) return updateNewsCoverPreview($('#news-cover-url').value);
     if (file.size > 5 * 1024 * 1024 || !['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.type)) {
       event.target.value = '';
+      updateNewsCoverPreview($('#news-cover-url').value);
       toast('กรุณาใช้ไฟล์ JPG, PNG, WebP หรือ GIF ขนาดไม่เกิน 5MB', true);
       return;
     }

@@ -68,6 +68,12 @@ newsReject(fn() => AppService::handle('news.upload', ['data_url' => 'data:text/p
 newsReject(fn() => AppService::handle('ai.news', ['story_type' => 'unknown']), 'รูปแบบข่าวไม่ถูกต้อง');
 newsReject(fn() => AppService::handle('ai.news', ['tone' => 'unknown']), 'โทนข่าวไม่ถูกต้อง');
 newsReject(fn() => AppService::handle('ai.news', ['instruction' => str_repeat('ก', 801)]), '800');
+newsReject(fn() => AppService::handle('ai.news', ['instruction' => '[GENERAL_TOPIC]']), 'กรุณาระบุหัวข้อ');
+$topic = 'เชิญร่วมกิจกรรมกีฬาเพื่อสุขภาพ โปรดติดตามกำหนดการจากคณะ';
+$topicDraft = AppService::handle('ai.news', ['story_type' => 'preview', 'tone' => 'official', 'instruction' => "[GENERAL_TOPIC]\n{$topic}\n\nประเด็นเน้น: เชิญชวนผู้ชม\nความยาว: สั้น"]);
+newsCheck($topicDraft['body'] === $topic && $topicDraft['match_id'] === '', 'General topic must not borrow a match or invent facts');
+newsCheck($topicDraft['provider'] === 'local-summary', 'Missing Gemini credentials must be represented honestly');
+newsCheck(array_keys($topicDraft) === ['title', 'excerpt', 'body', 'banner_title', 'banner_subtitle', 'sport_name', 'tournament_name', 'match_id', 'model', 'provider'], 'AI response contract changed');
 
 foreach (['admin', 'public_relations', 'sport_head', 'result_officer'] as $role) {
     newsAdmin();
