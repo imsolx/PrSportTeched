@@ -1,7 +1,15 @@
 <?php
 declare(strict_types=1);
 
-require dirname(__DIR__) . '/app/bootstrap.php';
+try {
+    require dirname(__DIR__) . '/app/bootstrap.php';
+} catch (Throwable $error) {
+    error_log((string) $error);
+    http_response_code(500);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(['ok' => false, 'error' => 'ระบบเชื่อมต่อฐานข้อมูลไม่สำเร็จ กรุณาลองใหม่อีกครั้ง'], JSON_UNESCAPED_UNICODE);
+    exit;
+}
 
 $action = (string) ($_GET['action'] ?? ($_POST['action'] ?? ''));
 

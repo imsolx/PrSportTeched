@@ -26,18 +26,63 @@ final class Database
 
         self::ensureMysqlDatabase($dsn, $user, $pass);
 
-        self::$pdo = new PDO($dsn, $user, $pass, [
+        $options = [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        ]);
+        ];
+        // Transaction poolers cannot retain server-side named statements.
+        if (str_starts_with($dsn, 'pgsql:')) {
+            $options[PDO::ATTR_EMULATE_PREPARES] = true;
+        }
+        self::$pdo = new PDO($dsn, $user, $pass, $options);
 
         if (self::isSqlite()) {
             self::$pdo->exec('PRAGMA foreign_keys = ON');
         }
-        self::migrate(self::$pdo);
-        self::seedBootstrapAdmin(self::$pdo);
+        self::initializeSchema(self::$pdo, $dsn, $user);
 
         return self::$pdo;
+    }
+
+    private static function initializeSchema(PDO $pdo, string $dsn, ?string $user): void
+    {
+        // In-memory databases are fresh on every process; never cache their setup.
+        if ($pdo->getAttribute(PDO::ATTR_DRIVER_NAME) !== 'pgsql') {
+            self::migrate($pdo);
+            self::seedBootstrapAdmin($pdo);
+            return;
+        }
+
+        $signature = hash('sha256', implode('|', [
+            $dsn, (string) $user,
+            hash_file('sha256', __FILE__),
+            hash_file('sha256', DATABASE_PATH . '/schema.pgsql.sql'),
+            hash_file('sha256', DATABASE_PATH . '/seed.pgsql.sql'),
+        ]));
+        // Render recreates this local marker on a new container. Only mark a
+        // successful migration, and serialize first requests within the instance.
+        $marker = STORAGE_PATH . '/schema-' . hash('sha256', $dsn . '|' . $user) . '.ready';
+        $lock = fopen($marker, 'c+');
+        if ($lock === false) {
+            throw new RuntimeException('Cannot open schema initialization marker');
+        }
+        try {
+            if (!flock($lock, LOCK_EX)) {
+                throw new RuntimeException('Cannot lock schema initialization marker');
+            }
+            if (trim((string) stream_get_contents($lock)) === $signature) {
+                return;
+            }
+            self::migrate($pdo);
+            self::seedBootstrapAdmin($pdo);
+            rewind($lock);
+            if (!ftruncate($lock, 0) || fwrite($lock, $signature) !== strlen($signature) || !fflush($lock)) {
+                throw new RuntimeException('Cannot save schema initialization marker');
+            }
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
     }
 
     public static function driver(): string

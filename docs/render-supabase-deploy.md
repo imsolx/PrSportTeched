@@ -64,6 +64,8 @@ https://your-render-service.onrender.com/deploy-check.php
 
 ## Notes
 
+- PostgreSQL schema initialization runs on the first request of each container, then uses a local success marker in `storage/schema-*.ready`. Changes to `Database.php`, the PostgreSQL schema, or seed invalidate the marker automatically. Failed initialization is retried on the next request. After manually restoring or replacing a database, restart/redeploy the service to initialize a fresh container.
+- PostgreSQL uses PDO emulated prepares for compatibility with Supabase transaction pooling. Values are still passed through PDO parameter binding.
 - Render free web services sleep after inactivity.
 - Render free filesystem is not persistent. Uploaded logos and exported reports can disappear after redeploys unless moved to Supabase Storage or another object storage provider.
 - Keep `.env` out of Git. Configure production secrets in Render only.
