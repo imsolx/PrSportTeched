@@ -6,7 +6,6 @@ final class Auth
     public const ROLE_SUPER_ADMIN = 'super_admin';
     public const ROLE_ADMIN = 'admin';
     public const ROLE_SPORT_HEAD = 'sport_head';
-    public const ROLE_REGISTRATION_OFFICER = 'registration_officer';
     public const ROLE_RESULT_OFFICER = 'result_officer';
     public const ROLE_PUBLIC_RELATIONS = 'public_relations';
     public const ROLE_GUEST = 'guest';
@@ -112,7 +111,7 @@ final class Auth
 
     public static function canManageRegistration(): array
     {
-        return self::requireRole([self::ROLE_SUPER_ADMIN, self::ROLE_ADMIN, self::ROLE_REGISTRATION_OFFICER]);
+        return self::requireRole([self::ROLE_SUPER_ADMIN, self::ROLE_ADMIN]);
     }
 
     public static function canManageSports(): array
@@ -150,41 +149,12 @@ final class Auth
 
     public static function canManageResults(): array
     {
-        return self::requireRole([self::ROLE_SUPER_ADMIN, self::ROLE_ADMIN, self::ROLE_RESULT_OFFICER]);
+        return self::requireRole([self::ROLE_SUPER_ADMIN, self::ROLE_ADMIN, self::ROLE_RESULT_OFFICER, self::ROLE_SPORT_HEAD]);
     }
 
     public static function canManageNews(): array
     {
         return self::requireRole([self::ROLE_SUPER_ADMIN, self::ROLE_ADMIN, self::ROLE_PUBLIC_RELATIONS]);
-    }
-
-    public static function canViewReports(): array
-    {
-        return self::requireRole([
-            self::ROLE_SUPER_ADMIN,
-            self::ROLE_ADMIN,
-            self::ROLE_SPORT_HEAD,
-            self::ROLE_REGISTRATION_OFFICER,
-            self::ROLE_RESULT_OFFICER,
-            self::ROLE_PUBLIC_RELATIONS,
-        ]);
-    }
-
-    public static function canEditReports(): array
-    {
-        return self::requireRole([
-            self::ROLE_SUPER_ADMIN,
-            self::ROLE_ADMIN,
-            self::ROLE_SPORT_HEAD,
-            self::ROLE_REGISTRATION_OFFICER,
-            self::ROLE_RESULT_OFFICER,
-            self::ROLE_PUBLIC_RELATIONS,
-        ]);
-    }
-
-    public static function canPublishReports(): array
-    {
-        return self::requireRole([self::ROLE_SUPER_ADMIN, self::ROLE_ADMIN]);
     }
 
     public static function roleOptions(): array
@@ -193,7 +163,6 @@ final class Auth
             ['value' => self::ROLE_SUPER_ADMIN, 'label' => 'System Admin'],
             ['value' => self::ROLE_ADMIN, 'label' => 'Operation Admin'],
             ['value' => self::ROLE_SPORT_HEAD, 'label' => 'Sport Manager'],
-            ['value' => self::ROLE_REGISTRATION_OFFICER, 'label' => 'ฝ่ายทะเบียนนักกีฬา'],
             ['value' => self::ROLE_RESULT_OFFICER, 'label' => 'Match Official'],
             ['value' => self::ROLE_PUBLIC_RELATIONS, 'label' => 'ฝ่ายประชาสัมพันธ์'],
         ];

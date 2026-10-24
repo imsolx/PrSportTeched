@@ -14,6 +14,9 @@ const bannerStudio = {
   dragging: null,
   bounds: {},
   positions: {},
+  textScales: { sport: 1, headline: 1, subtitle: 1 },
+  newsSyncSnapshot: null,
+  coverSource: null,
 };
 
 const bannerTemplatePositions = {
@@ -41,9 +44,15 @@ function initBannerStudio() {
   bannerStudio.context = canvas.getContext('2d');
   setBannerTemplate('matchday');
 
-  $('#banner-open-button').addEventListener('click', () => openBannerStudio());
-  $('#banner-close-button').addEventListener('click', () => $('#banner-dialog').close());
-  bindDialogDismiss($('#banner-dialog'), () => $('#banner-dialog').close());
+  $('#banner-open-button').addEventListener('click', () => runTask($('#banner-open-button'), openBannerStudio));
+  $('#banner-close-button').addEventListener('click', () => showView('news-editor', { history: 'push' }));
+  $('#view-news-banner').addEventListener('input', () => { newsUi.bannerDirty = true; markNewsDirty(); });
+  $('#view-news-banner').addEventListener('change', () => { newsUi.bannerDirty = true; markNewsDirty(); });
+  $('#banner-element-scale').addEventListener('input', event => {
+    bannerStudio.textScales[bannerStudio.selected] = Number(event.target.value) / 100;
+    $('#banner-element-scale-value').textContent = `${event.target.value}%`;
+    renderBanner();
+  });
 
   $('#banner-template').addEventListener('change', event => setBannerTemplate(event.target.value));
   $('#banner-accent').addEventListener('input', event => { bannerStudio.accent = event.target.value; renderBanner(); });
@@ -70,7 +79,13 @@ function initBannerStudio() {
   $('#banner-image-file').addEventListener('change', async event => {
     const file = event.target.files[0];
     if (!file) return;
-    bannerStudio.photo = await loadBannerImage(await fileToDataUrl(file));
+    if (file.size > 5 * 1024 * 1024 || !['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+      event.target.value = '';
+      toast('กรุณาใช้ไฟล์ JPG, PNG หรือ WebP ขนาดไม่เกิน 5MB', true);
+      return;
+    }
+    try { bannerStudio.photo = await loadBannerImage(await fileToDataUrl(file)); }
+    catch (_) { toast('เปิดรูปภาพไม่ได้ กรุณาตรวจสอบไฟล์', true); return; }
     bannerStudio.imageScale = 100;
     bannerStudio.imageX = 50;
     bannerStudio.imageY = 50;
@@ -113,35 +128,6 @@ function initBannerStudio() {
   }).catch(() => renderBanner());
 }
 
-function prepareNewsEditor(row) {
-  updateNewsCoverPreview(row?.cover_image_url || '');
-  $('#news-ai-status').textContent = app.aiSettings?.configured ? `Gemini: ${app.aiSettings.default_model}` : 'พร้อมสร้างร่าง';
-  syncBannerFromNews({
-    sport: '',
-    headline: row?.title || '',
-    subtitle: row?.excerpt || '',
-  });
-}
-
-function updateNewsCoverPreview(source = '') {
-  const host = $('#news-cover-preview');
-  if (!host) return;
-  host.replaceChildren();
-  if (!source) {
-    host.innerHTML = `${icon('image')}<span>ยังไม่มีรูปปก</span>`;
-    refreshIcons(host);
-    return;
-  }
-  const image = document.createElement('img');
-  image.src = source;
-  image.alt = 'ตัวอย่างรูปปกข่าว';
-  image.addEventListener('error', () => {
-    host.innerHTML = `${icon('image-off')}<span>ไม่สามารถแสดงรูปปกได้</span>`;
-    refreshIcons(host);
-  }, { once: true });
-  host.append(image);
-}
-
 function syncBannerFromNews({ sport = '', headline = '', subtitle = '' } = {}) {
   if (sport) $('#banner-sport').value = sport;
   if (headline) $('#banner-headline').value = headline;
@@ -151,25 +137,46 @@ function syncBannerFromNews({ sport = '', headline = '', subtitle = '' } = {}) {
 
 async function openBannerStudio() {
   const newsForm = $('#news-form');
-  const match = app.newsMatches.find(row => String(row.id) === $('#news-ai-match').value);
-  const tournament = app.newsMatches.find(row => String(row.tournament_id) === $('#news-ai-tournament').value);
-  $('#banner-sport').value = match?.sport_name || tournament?.sport_name || $('#news-ai-sport option:checked')?.textContent.replace('ทุกกีฬา', '') || $('#banner-sport').value;
-  $('#banner-headline').value = newsForm.elements.title.value || $('#banner-headline').value || 'การแข่งขันกีฬาครุศาสตร์อุตสาหกรรม';
-  $('#banner-subtitle').value = match?.tournament_name || tournament?.tournament_name || newsForm.elements.excerpt.value || $('#banner-subtitle').value;
+  const match = selectedNewsMatch();
+  const tournament = app.tournaments.find(row => String(row.id) === newsForm.elements.tournament_id.value);
+  const snapshot = newsBannerSourceSnapshot();
+  const previous = bannerStudio.newsSyncSnapshot;
+  const flatCover = !$('#news-file').files.length && /(?:^|\/)banner-[^/]+\.png(?:[?#].*)?$/i.test(newsForm.elements.cover_image_url.value);
+  $('#banner-flat-cover-note').hidden = !flatCover;
+  if (!previous || previous.sport !== snapshot.sport) $('#banner-sport').value = snapshot.sport;
+  if (!previous || previous.title !== snapshot.title) $('#banner-headline').value = snapshot.title;
+  if (!previous && flatCover && newsMatchIsOfficial(match)) {
+    $('#banner-headline').value = `${match.team1_name} ${match.score_label} ${match.team2_name}`;
+    setBannerTemplate('result');
+  }
+  if (!previous || previous.excerpt !== snapshot.excerpt || previous.tournament !== snapshot.tournament) $('#banner-subtitle').value = match?.tournament_name || tournament?.name || snapshot.excerpt;
+  bannerStudio.newsSyncSnapshot = snapshot;
 
   const file = $('#news-file').files[0];
   const coverUrl = $('#news-cover-url').value.trim();
+  const coverSource = file ? `${file.name}:${file.size}:${file.lastModified}` : coverUrl;
   try {
-    if (file) bannerStudio.photo = await loadBannerImage(await fileToDataUrl(file));
-    else if (coverUrl) bannerStudio.photo = await loadBannerImage(coverUrl);
+    if (bannerStudio.coverSource !== coverSource) {
+      if (file) bannerStudio.photo = await loadBannerImage(await fileToDataUrl(file));
+      else if (coverUrl && !flatCover) bannerStudio.photo = await loadBannerImage(coverUrl);
+      else bannerStudio.photo = null;
+      bannerStudio.coverSource = coverSource;
+    }
   } catch (error) {
     bannerStudio.photo = null;
     toast('โหลดรูปปกเดิมไม่ได้ กรุณาเลือกรูปการแข่งขันใหม่', true);
   }
-  $('#banner-dialog').showModal();
+  await showView('news-banner', { history: 'push' });
   syncBannerImageControls();
   syncBannerElementControls();
   renderBanner();
+}
+
+function newsBannerSourceSnapshot() {
+  const form = $('#news-form');
+  const match = selectedNewsMatch();
+  return { title: form.elements.title.value, excerpt: form.elements.excerpt.value, tournament: form.elements.tournament_id.value,
+    sport: match?.sport_name || app.sports.find(row => String(row.id) === form.elements.sport_id.value)?.name || '' };
 }
 
 function setBannerTemplate(template) {
@@ -203,6 +210,9 @@ function syncBannerElementControls() {
   $('#banner-active-element').value = bannerStudio.selected;
   $('#banner-element-x').value = String(bannerStudio.positions[bannerStudio.selected].x);
   $('#banner-element-y').value = String(bannerStudio.positions[bannerStudio.selected].y);
+  const scale = Math.round((bannerStudio.textScales[bannerStudio.selected] || 1) * 100);
+  $('#banner-element-scale').value = String(scale);
+  $('#banner-element-scale-value').textContent = `${scale}%`;
 }
 
 function loadBannerImage(source) {
@@ -265,6 +275,7 @@ function renderBanner(showSelection = true) {
     color: darkText ? '#061f42' : '#ffffff',
     maxWidth: template === 'result' ? 420 : template === 'matchday' ? 540 : 1020,
     maxLines: template === 'spotlight' ? 2 : 3,
+    maxHeight: Math.max(24, (bannerStudio.positions.subtitle.y - bannerStudio.positions.headline.y) / 100 * height - 18),
     lineHeight: 1.2,
   });
   drawBannerText('subtitle', $('#banner-subtitle')?.value || 'มหาวิทยาลัยเทคโนโลยีราชมงคลธัญบุรี', {
@@ -317,12 +328,13 @@ function drawBannerText(key, text, options) {
   const anchorX = position.x / 100 * bannerStudio.canvas.width;
   const topY = position.y / 100 * bannerStudio.canvas.height;
   const fontFamily = 'Prompt, Sarabun, Tahoma, sans-serif';
-  let size = options.size;
+  let size = Math.round(options.size * (bannerStudio.textScales[key] || 1));
   let lines = [];
   do {
     ctx.font = `${options.weight} ${size}px ${fontFamily}`;
     lines = wrapBannerText(ctx, text, options.maxWidth);
-    if (lines.length <= options.maxLines || size <= 24) break;
+    const fitsHeight = !options.maxHeight || Math.min(lines.length, options.maxLines) * size * options.lineHeight <= options.maxHeight;
+    if ((lines.length <= options.maxLines && fitsHeight) || size <= 24) break;
     size -= 2;
   } while (size >= 24);
   if (lines.length > options.maxLines) {
@@ -427,8 +439,11 @@ async function useBannerAsCover() {
   }
   const upload = await request('news.upload', { data_url: dataUrl, file_name: `banner-${Date.now()}.png` });
   $('#news-cover-url').value = upload.url;
+  bannerStudio.coverSource = upload.url;
   $('#news-file').value = '';
   updateNewsCoverPreview(upload.url);
-  $('#banner-dialog').close();
+  newsUi.bannerDirty = false;
+  markNewsDirty();
+  await showView('news-editor', { history: 'push' });
   toast('นำแบนเนอร์ไปใช้เป็นรูปปกข่าวแล้ว');
 }

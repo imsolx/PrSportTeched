@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY,
   email TEXT NOT NULL UNIQUE,
   name TEXT NOT NULL,
-  role TEXT NOT NULL DEFAULT 'registration_officer',
+  role TEXT NOT NULL DEFAULT 'admin',
   department_code TEXT,
   sport_ids TEXT,
   password_hash TEXT,
@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS user_invites (
   token_hash TEXT NOT NULL UNIQUE,
   email TEXT NOT NULL,
   name TEXT,
-  role TEXT NOT NULL DEFAULT 'registration_officer',
+  role TEXT NOT NULL DEFAULT 'admin',
   department_code TEXT,
   sport_ids TEXT,
   invited_by TEXT,
@@ -175,6 +175,7 @@ CREATE TABLE IF NOT EXISTS matches (
   clock_seconds INTEGER NOT NULL DEFAULT 0,
   clock_status TEXT NOT NULL DEFAULT 'stopped',
   overtime_count INTEGER NOT NULL DEFAULT 0,
+  action_revision INTEGER NOT NULL DEFAULT 0,
   confirmed_by TEXT,
   confirmed_at TEXT,
   created_at TEXT,
@@ -202,6 +203,63 @@ CREATE TABLE IF NOT EXISTS standings (
   UNIQUE (tournament_id, team_id),
   FOREIGN KEY (tournament_id) REFERENCES tournaments(id),
   FOREIGN KEY (team_id) REFERENCES teams(id)
+);
+
+CREATE TABLE IF NOT EXISTS match_official_assignments (
+  match_id INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  team_id INTEGER,
+  assigned_by TEXT,
+  created_at TEXT,
+  PRIMARY KEY (match_id, user_id),
+  FOREIGN KEY (match_id) REFERENCES matches(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (team_id) REFERENCES teams(id)
+);
+
+CREATE TABLE IF NOT EXISTS match_entries (
+  id INTEGER PRIMARY KEY,
+  match_id INTEGER NOT NULL,
+  entry_type TEXT NOT NULL,
+  student_id INTEGER,
+  team_id INTEGER,
+  department_code TEXT,
+  display_name TEXT NOT NULL,
+  lane_number INTEGER,
+  source_type TEXT NOT NULL DEFAULT 'manual',
+  members_json TEXT NOT NULL DEFAULT '[]',
+  result_status TEXT NOT NULL DEFAULT 'PENDING',
+  provisional_time_ms INTEGER,
+  verified_time_ms INTEGER,
+  rank_number INTEGER,
+  points INTEGER NOT NULL DEFAULT 0,
+  revision_number INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT,
+  updated_at TEXT,
+  FOREIGN KEY (match_id) REFERENCES matches(id) ON DELETE CASCADE,
+  FOREIGN KEY (student_id) REFERENCES students(id),
+  FOREIGN KEY (team_id) REFERENCES teams(id),
+  FOREIGN KEY (department_code) REFERENCES departments(code)
+);
+
+CREATE TABLE IF NOT EXISTS match_entry_revisions (
+  id INTEGER PRIMARY KEY,
+  entry_id INTEGER NOT NULL,
+  old_value TEXT NOT NULL,
+  new_value TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  updated_by TEXT,
+  created_at TEXT,
+  FOREIGN KEY (entry_id) REFERENCES match_entries(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS match_event_requests (
+  request_id TEXT PRIMARY KEY,
+  match_id INTEGER NOT NULL,
+  event_id INTEGER NOT NULL,
+  created_at TEXT,
+  FOREIGN KEY (match_id) REFERENCES matches(id) ON DELETE CASCADE,
+  FOREIGN KEY (event_id) REFERENCES match_events(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS news (
@@ -253,6 +311,8 @@ CREATE TABLE IF NOT EXISTS sport_rule_versions (
   category TEXT,
   player_type TEXT NOT NULL DEFAULT 'team',
   team_size INTEGER NOT NULL DEFAULT 1,
+  scoring_type TEXT NOT NULL DEFAULT 'SCORE',
+  scoring_config TEXT NOT NULL DEFAULT '{}',
   scoring_system TEXT NOT NULL DEFAULT '{}',
   match_format TEXT NOT NULL DEFAULT '{}',
   period_format TEXT NOT NULL DEFAULT '{}',
@@ -321,6 +381,33 @@ CREATE TABLE IF NOT EXISTS match_events (
   FOREIGN KEY (student_id) REFERENCES students(id)
 );
 
+CREATE TABLE IF NOT EXISTS match_results (
+  id INTEGER PRIMARY KEY,
+  match_id INTEGER NOT NULL UNIQUE,
+  scoring_type TEXT NOT NULL,
+  config_snapshot TEXT NOT NULL DEFAULT '{}',
+  result_data TEXT NOT NULL DEFAULT '{}',
+  summary_json TEXT NOT NULL DEFAULT '{}',
+  revision_number INTEGER NOT NULL DEFAULT 1,
+  created_by TEXT,
+  updated_by TEXT,
+  created_at TEXT,
+  updated_at TEXT,
+  FOREIGN KEY (match_id) REFERENCES matches(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS match_result_revisions (
+  id INTEGER PRIMARY KEY,
+  match_result_id INTEGER NOT NULL,
+  revision_number INTEGER NOT NULL,
+  old_result TEXT NOT NULL DEFAULT '{}',
+  new_result TEXT NOT NULL DEFAULT '{}',
+  reason TEXT,
+  updated_by TEXT,
+  created_at TEXT,
+  FOREIGN KEY (match_result_id) REFERENCES match_results(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS news_links (
   news_id INTEGER NOT NULL,
   entity_type TEXT NOT NULL,
@@ -339,95 +426,6 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   created_at TEXT
 );
 
-CREATE TABLE IF NOT EXISTS report_categories (
-  id INTEGER PRIMARY KEY,
-  code TEXT NOT NULL UNIQUE,
-  name TEXT NOT NULL,
-  description TEXT,
-  icon TEXT,
-  display_order INTEGER NOT NULL DEFAULT 0,
-  is_active INTEGER NOT NULL DEFAULT 1
-);
-
-CREATE TABLE IF NOT EXISTS report_templates (
-  id INTEGER PRIMARY KEY,
-  category_id INTEGER NOT NULL,
-  code TEXT NOT NULL UNIQUE,
-  name TEXT NOT NULL,
-  description TEXT,
-  sections_json TEXT,
-  display_order INTEGER NOT NULL DEFAULT 0,
-  is_active INTEGER NOT NULL DEFAULT 1,
-  FOREIGN KEY (category_id) REFERENCES report_categories(id)
-);
-
-CREATE TABLE IF NOT EXISTS reports (
-  id INTEGER PRIMARY KEY,
-  title TEXT NOT NULL,
-  category_id INTEGER NOT NULL,
-  template_id INTEGER NOT NULL,
-  tournament_id INTEGER,
-  academic_year TEXT,
-  fiscal_year TEXT,
-  semester TEXT,
-  start_date TEXT,
-  end_date TEXT,
-  department TEXT,
-  responsible_person TEXT,
-  prepared_by TEXT,
-  report_date TEXT,
-  status TEXT NOT NULL DEFAULT 'draft',
-  general_json TEXT,
-  performance_json TEXT,
-  outcomes_json TEXT,
-  problems_json TEXT,
-  executive_summary TEXT,
-  created_by TEXT,
-  published_at TEXT,
-  created_at TEXT,
-  updated_at TEXT,
-  FOREIGN KEY (category_id) REFERENCES report_categories(id),
-  FOREIGN KEY (template_id) REFERENCES report_templates(id),
-  FOREIGN KEY (tournament_id) REFERENCES tournaments(id)
-);
-
-CREATE TABLE IF NOT EXISTS report_kpis (
-  id INTEGER PRIMARY KEY,
-  report_id INTEGER NOT NULL,
-  name TEXT NOT NULL,
-  unit TEXT,
-  target_value REAL,
-  actual_value REAL,
-  calculation_type TEXT NOT NULL DEFAULT 'percentage',
-  achievement REAL,
-  status TEXT,
-  display_order INTEGER NOT NULL DEFAULT 0,
-  FOREIGN KEY (report_id) REFERENCES reports(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS report_budgets (
-  id INTEGER PRIMARY KEY,
-  report_id INTEGER NOT NULL UNIQUE,
-  allocated REAL NOT NULL DEFAULT 0,
-  actual REAL NOT NULL DEFAULT 0,
-  remaining REAL NOT NULL DEFAULT 0,
-  usage_percentage REAL NOT NULL DEFAULT 0,
-  note TEXT,
-  FOREIGN KEY (report_id) REFERENCES reports(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS report_attachments (
-  id INTEGER PRIMARY KEY,
-  report_id INTEGER NOT NULL,
-  file_name TEXT NOT NULL,
-  file_url TEXT NOT NULL,
-  file_type TEXT,
-  file_size INTEGER NOT NULL DEFAULT 0,
-  note TEXT,
-  created_at TEXT,
-  FOREIGN KEY (report_id) REFERENCES reports(id) ON DELETE CASCADE
-);
-
 CREATE INDEX IF NOT EXISTS idx_students_department ON students(department_code);
 CREATE INDEX IF NOT EXISTS idx_tournaments_sport ON tournaments(sport_id);
 CREATE INDEX IF NOT EXISTS idx_tournament_sports_sport ON tournament_sports(sport_id);
@@ -443,9 +441,3 @@ CREATE INDEX IF NOT EXISTS idx_teams_sport ON teams(sport_id);
 CREATE INDEX IF NOT EXISTS idx_news_status_type ON news(status, news_type);
 CREATE INDEX IF NOT EXISTS idx_audit_created_at ON audit_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_user_invites_status_expires ON user_invites(status, expires_at);
-CREATE INDEX IF NOT EXISTS idx_report_templates_category ON report_templates(category_id);
-CREATE INDEX IF NOT EXISTS idx_reports_status_year ON reports(status, academic_year);
-CREATE INDEX IF NOT EXISTS idx_reports_category_template ON reports(category_id, template_id);
-CREATE INDEX IF NOT EXISTS idx_reports_tournament ON reports(tournament_id);
-CREATE INDEX IF NOT EXISTS idx_report_kpis_report ON report_kpis(report_id);
-CREATE INDEX IF NOT EXISTS idx_report_attachments_report ON report_attachments(report_id);

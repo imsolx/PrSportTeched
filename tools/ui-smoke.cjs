@@ -1,12 +1,17 @@
 const { chromium, expect } = require('@playwright/test');
 const { spawn } = require('node:child_process');
-const { mkdir, rm } = require('node:fs/promises');
+const { mkdir, rm, readFile } = require('node:fs/promises');
 const path = require('node:path');
 const net = require('node:net');
+const { runNewsUxFlow } = require('./news-ux-ui-test.cjs');
 
 async function main() {
   const root = path.resolve(__dirname, '..');
-  const artifacts = path.join(root, 'storage', 'ui-checks');
+  const artifacts = process.env.PRSPORT_UI_ARTIFACTS || path.join(root, 'storage', 'ui-checks');
+  const newsBaselineCss = process.env.PRSPORT_NEWS_BASELINE
+    ? await readFile(path.join(process.env.PRSPORT_NEWS_BASELINE, 'public/assets/workspace.css'), 'utf8') : null;
+  let newsVisualChecks = 0;
+  let newsRasterOnlyDifferences = 0;
   await mkdir(artifacts, { recursive: true });
   const db = path.join(artifacts, `test-${Date.now()}.sqlite`);
   const port = await new Promise(resolve => {
@@ -14,12 +19,21 @@ async function main() {
     socket.listen(0, '127.0.0.1', () => { const port = socket.address().port; socket.close(() => resolve(port)); });
   });
   const server = spawn(process.env.PHP_BINARY || 'C:/xampp/php/php.exe', ['-d', `upload_tmp_dir=${artifacts}`, '-d', 'display_errors=0', '-S', `127.0.0.1:${port}`, '-t', root], {
-    cwd: root, env: { ...process.env, PRSPORT_DB_DSN: `sqlite:${db}`, GEMINI_API_KEY: '', GEMINI_MODEL: 'local-summary' }, windowsHide: true, stdio: 'ignore',
+    cwd: root, env: { ...process.env, PRSPORT_DB_DSN: `sqlite:${db}`, GEMINI_API_KEY: '', GEMINI_MODEL: 'local-summary' }, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  const phpErrors = [];
+  server.stderr.on('data', chunk => {
+    for (const line of chunk.toString().split(/\r?\n/)) {
+      if (/PHP (?:Warning|Notice|Deprecated|Fatal error|Parse error)|Uncaught /i.test(line)) phpErrors.push(line);
+    }
   });
   let browser;
   const generatedUploads = [];
   try {
     const base = `http://127.0.0.1:${port}`;
+    const upcomingDay = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const upcomingMatchAt = `${upcomingDay}T18:30`;
+    const secondUpcomingMatchAt = `${upcomingDay}T19:00`;
     for (let attempt = 0; attempt < 50; attempt++) {
       if (await fetch(base).then(r => r.ok).catch(() => false)) break;
       await new Promise(resolve => setTimeout(resolve, 100));
@@ -27,20 +41,115 @@ async function main() {
     browser = await chromium.launch({ channel: 'chrome', headless: true });
     const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
     const errors = [];
+    const consoleErrors = [];
+    const actionRequests = new Map();
+    page.on('request', request => {
+      const action = new URL(request.url()).searchParams.get('action');
+      if (action) actionRequests.set(action, (actionRequests.get(action) || 0) + 1);
+    });
     page.on('pageerror', error => errors.push(error.message));
+    page.on('console', message => {
+      if (message.type() === 'error' && !message.text().startsWith('Failed to load resource:')) {
+        consoleErrors.push(message.text());
+      }
+    });
     const capture = async options => {
+      await expect(page.locator('#page-progress')).toBeHidden();
       await page.evaluate(() => {
         if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
         document.scrollingElement.scrollTop = 0;
         window.scrollTo(0, 0);
       });
       await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-      await page.screenshot({ ...options, animations: 'disabled', style: '#toast { visibility: hidden; }' });
+      const screenshotOptions = { ...options, animations: 'disabled', style: '#toast { visibility: hidden; }' };
+      const actual = await page.screenshot(screenshotOptions);
+      if (newsBaselineCss && /^(?:dashboard-desktop|sports-390|tournament-dashboard-mobile)/.test(path.basename(options.path))) {
+        const layoutSnapshot = () => [...document.querySelectorAll('body *')]
+          .filter(element => element.getClientRects().length && !element.closest('#toast'))
+          .map(element => {
+            const rect = element.getBoundingClientRect();
+            const style = getComputedStyle(element);
+            const properties = [...style].sort().map(key => [key, style.getPropertyValue(key)]);
+            const backdrop = element.tagName === 'DIALOG' ? getComputedStyle(element, '::backdrop') : null;
+            return [element.tagName, element.id, rect.x, rect.y, rect.width, rect.height, properties,
+              backdrop ? [...backdrop].sort().map(key => [key, backdrop.getPropertyValue(key)]) : null];
+          });
+        const actualLayout = await page.evaluate(layoutSnapshot);
+        // Compare all original computed styles above, including shadows/blur. Only normalize those
+        // GPU effects for the paired raster captures; the user-facing screenshot keeps the real UI.
+        const { path: actualPath, ...comparisonOptions } = screenshotOptions;
+        comparisonOptions.style += '\n*, *::before, *::after, dialog::backdrop { backdrop-filter: none !important; filter: none !important; box-shadow: none !important; text-shadow: none !important; }';
+        const comparableActual = await page.screenshot(comparisonOptions);
+        await page.evaluate(css => {
+          const sheet = document.querySelector('link[href*="/assets/workspace.css"]');
+          const original = document.createElement('style');
+          original.id = 'news-refactor-baseline-style';
+          original.textContent = css.replace(/url\((['"]?)([^'"\)]+)\1\)/g, (_, quote, url) =>
+            `url("${new URL(url, sheet.href).href}")`);
+          sheet.after(original);
+          sheet.disabled = true;
+          document.querySelectorAll('link[href*="/modules/news/"]').forEach(link => link.disabled = true);
+        }, newsBaselineCss);
+        try {
+          const baseline = await page.screenshot({ ...comparisonOptions, path: options.path.replace(/\.png$/, '-baseline-css.png') });
+          expect(await page.evaluate(layoutSnapshot), `Unchanged layout/styles: ${path.basename(options.path)}`).toEqual(actualLayout);
+          if (!baseline.equals(comparableActual)) {
+            // Chromium may rasterize unchanged blur/anti-aliasing up to two channel levels differently
+            // after stylesheet invalidation. Compare pixels, not PNG encoding, with a strict noise cap.
+            const difference = await page.evaluate(async buffers => {
+              const load = data => new Promise((resolve, reject) => {
+                const image = new Image(); image.onload = () => resolve(image); image.onerror = reject;
+                image.src = `data:image/png;base64,${data}`;
+              });
+              const [actualImage, baselineImage] = await Promise.all(buffers.map(load));
+              const canvas = document.createElement('canvas');
+              canvas.width = actualImage.width; canvas.height = actualImage.height;
+              const context = canvas.getContext('2d', { willReadFrequently: true });
+              context.drawImage(actualImage, 0, 0);
+              const a = context.getImageData(0, 0, canvas.width, canvas.height).data;
+              context.clearRect(0, 0, canvas.width, canvas.height);
+              context.drawImage(baselineImage, 0, 0);
+              const b = context.getImageData(0, 0, canvas.width, canvas.height).data;
+              let maxDelta = 0, pixels = 0;
+              for (let i = 0; i < a.length; i += 4) {
+                let delta = 0;
+                for (let channel = 0; channel < 4; channel++) delta = Math.max(delta, Math.abs(a[i + channel] - b[i + channel]));
+                if (delta) pixels++;
+                maxDelta = Math.max(maxDelta, delta);
+              }
+              return { maxDelta, pixels, total: canvas.width * canvas.height };
+            }, [comparableActual.toString('base64'), baseline.toString('base64')]);
+            expect(difference.maxDelta, 'No visible color changes').toBeLessThanOrEqual(2);
+            expect(difference.pixels, 'Only minor blur rasterization noise').toBeLessThanOrEqual(difference.total * 0.005);
+            newsRasterOnlyDifferences++;
+          }
+          newsVisualChecks++;
+        } finally {
+          await page.evaluate(() => {
+            document.getElementById('news-refactor-baseline-style')?.remove();
+            document.querySelector('link[href*="/assets/workspace.css"]').disabled = false;
+            document.querySelectorAll('link[href*="/modules/news/"]').forEach(link => link.disabled = false);
+          });
+        }
+      }
     };
     await page.goto(base);
     await page.waitForFunction(() => document.querySelectorAll('.editor-dialog').length >= 10);
     await expect(page.locator('#page-progress')).toBeHidden();
     await page.evaluate(() => document.fonts.ready);
+    await expect(page.locator('#view-public')).toBeVisible();
+    await expect(page).not.toHaveURL(/(?:\?|&)view=/);
+    await page.goto(`${base}/?view=reports`);
+    await expect(page.locator('#view-public')).toBeVisible();
+    await expect(page).not.toHaveURL(/(?:\?|&)view=reports/);
+    await page.locator('.tab[data-view-button="public-news"]').click();
+    await expect(page).toHaveURL(/view=public-news/);
+    await page.reload();
+    await expect(page.locator('#view-public-news')).toBeVisible();
+    await page.locator('.tab[data-view-button="public"]').click();
+    await expect(page).not.toHaveURL(/(?:\?|&)view=/);
+    await page.reload();
+    await expect(page.locator('#view-public')).toBeVisible();
     await capture({ path: path.join(artifacts, 'public-desktop.png'), fullPage: true });
     await page.locator('.news-read').first().click();
     await expect(page).toHaveURL(/view=public-news-detail&id=1/);
@@ -64,6 +173,66 @@ async function main() {
     await page.locator('#login-form [type=submit]').click();
     await expect(page.locator('#view-dashboard')).toBeVisible();
     await expect(page.locator('#page-progress')).toBeHidden();
+    await expect(page.locator('[data-view-button="reports"]')).toHaveCount(0);
+    await expect(page.locator('#view-reports')).toHaveCount(0);
+    await expect(page.locator('[data-workflow-view="reports"]')).toHaveCount(0);
+    await expect(page.locator('#role-switch-button')).toBeVisible();
+    await page.locator('#role-switch-button').click();
+    await expect(page.locator('#role-switch-dialog')).toBeVisible();
+    await expect(page.locator('[data-presentation-role]')).toHaveCount(5);
+    await expect(page.locator('[data-presentation-role="registration_officer"]')).toHaveCount(0);
+    await capture({ path: path.join(artifacts, 'role-switcher-desktop.png'), fullPage: false });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.locator('#role-switch-dialog')).toBeVisible();
+    await capture({ path: path.join(artifacts, 'role-switcher-mobile.png'), fullPage: false });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.locator('[data-presentation-role="result_officer"]').click();
+    await expect(page.locator('#role-preview-bar')).toBeVisible();
+    await expect(page.locator('#role-preview-label')).toHaveText('Match Official');
+    await expect(page.locator('#view-official')).toBeVisible();
+    await expect(page.locator('.admin-link[data-view-button="official"]')).toBeVisible();
+    await expect(page.locator('.admin-link[data-view-button="users"]')).toBeHidden();
+    await expect.poll(() => page.locator('.admin-link:visible').evaluateAll(nodes => nodes.map(node => node.dataset.viewButton))).toEqual(['official']);
+    await capture({ path: path.join(artifacts, 'role-preview-match-official-desktop.png'), fullPage: false });
+    const roleMenuMatrix = {
+      admin: ['dashboard', 'sports', 'students', 'matches', 'official', 'news'],
+      sport_head: ['dashboard', 'matches', 'official'],
+      public_relations: ['dashboard', 'news'],
+    };
+    await page.evaluate(async () => {
+      const sport = (await request('sports.list'))[0];
+      await request('tournaments.save', { name: 'Role navigation tournament', sport_ids: [sport.id], format: 'knockout', status: 'draft' });
+    });
+    for (const [role, visibleViews] of Object.entries(roleMenuMatrix)) {
+      await page.locator('#role-switch-button').click();
+      await page.locator(`[data-presentation-role="${role}"]`).click();
+      await expect(page.locator('#page-progress')).toBeHidden();
+      await expect.poll(() => page.locator('.admin-link:visible').evaluateAll(nodes => nodes.map(node => node.dataset.viewButton))).toEqual(visibleViews);
+      if (role === 'sport_head') {
+        await page.locator('[data-view-button="matches"]').click();
+        await expect(page.locator('#view-matches')).toBeVisible();
+        await expect(page.locator('#tournament-list-page')).toBeVisible();
+        await expect(page.locator('[data-workflow-step-button]')).toHaveCount(0);
+        await page.locator('[data-open-tournament]').first().click();
+        for (const section of ['overview', 'sports', 'athletes', 'teams', 'schedule', 'results']) {
+          await page.locator(`[data-tournament-section="${section}"]`).click();
+          await expect(page.locator('#tournament-dashboard-page')).toHaveAttribute('data-section', section);
+        }
+        await expect(page.locator('#tournament-edit-button')).toBeHidden();
+        await expect(page.locator('#fixture-generator')).toBeHidden();
+        await expect(page.locator('[data-workflow-view="news"]')).toHaveCount(0);
+        await capture({ path: path.join(artifacts, 'sport-manager-workflow-desktop.png'), fullPage: false });
+        await page.setViewportSize({ width: 390, height: 844 });
+        await capture({ path: path.join(artifacts, 'sport-manager-workflow-mobile.png'), fullPage: false });
+        await page.setViewportSize({ width: 1440, height: 1000 });
+        await expect(page.locator('#tournament-record-results')).toBeVisible();
+      }
+    }
+    await page.locator('#role-switch-button').click();
+    await page.locator('[data-presentation-role="super_admin"]').click();
+    await expect(page.locator('#role-preview-bar')).toBeHidden();
+    await expect(page.locator('#view-dashboard')).toBeVisible();
+    await expect(page.locator('.admin-link[data-view-button="users"]')).toBeVisible();
     await capture({ path: path.join(artifacts, 'dashboard-desktop.png'), fullPage: true });
     await page.locator('#dashboard-ai-button').click();
     await expect(page.locator('#dashboard-ai-output .ai-meta')).toContainText('local-summary');
@@ -90,12 +259,17 @@ async function main() {
     };
     const noOverflow = async () => expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true);
     await go('sports');
+    await expect(page).toHaveURL(/view=sports/);
+    await page.reload();
+    await expect(page.locator('#view-sports')).toBeVisible();
+    await expect(page).toHaveURL(/view=sports/);
     await expect(page.locator('#sports-table [aria-label="ลบ"] svg').first()).toBeVisible();
     await page.getByRole('button', { name: 'เพิ่มกีฬา', exact: true }).click();
     await expect(page.locator('#sport-icon-picker .sport-icon-choice img')).toHaveCount(13);
     await page.locator('#sport-icon-picker [data-sport-icon="basketball"]').click();
     await expect(page.locator('#sport-form [name=icon]')).toHaveValue('basketball');
     await page.locator('#sport-form [name=name]').fill('UI Test Sport');
+    await page.locator('#sport-scoring-type').selectOption('SCORE');
     await page.keyboard.press('Escape');
     await expect(page.locator('.confirm-dialog')).toBeVisible();
     await page.locator('.confirm-dialog').getByRole('button', { name: 'กลับ', exact: true }).click();
@@ -115,12 +289,19 @@ async function main() {
     await page.locator('#sports-table').getByRole('button', { name: 'แก้ไข', exact: true }).click();
     await expect(page.locator('#sport-form [name=name]')).toHaveValue('UI Test Sport');
     await expect(page.locator('#sport-form [name=icon]')).toHaveValue('basketball');
+    await expect(page.locator('#sport-scoring-type')).toBeEnabled();
+    await page.locator('#sport-scoring-type').selectOption('SET');
     await page.locator('#sport-form [name=name]').fill('UI Test Sport Edited');
     await page.locator('#sport-form [type=submit]').click();
     await expect(page.locator('#sport-form-dialog')).toBeHidden();
     await expect(page.locator('#sports-table tbody')).toContainText('UI Test Sport Edited');
+    await page.locator('#sports-table').getByRole('button', { name: 'แก้ไข', exact: true }).click();
+    await expect(page.locator('#sport-scoring-type')).toHaveValue('SET');
+    await expect(page.locator('#sport-scoring-help')).toContainText('แมตช์เดิมยังใช้กติกาเดิม');
+    await page.locator('#sport-form-dialog .modal-head .icon-button').click();
     await page.getByRole('button', { name: 'เพิ่มกีฬา', exact: true }).click();
     await page.locator('#sport-form [name=name]').fill('UI Test Sport Edited');
+    await page.locator('#sport-scoring-type').selectOption('SCORE');
     await page.locator('#sport-form [type=submit]').click();
     await expect(page.locator('#sport-form .form-error')).toContainText('ชื่อกีฬานี้มีอยู่แล้ว');
     await page.keyboard.press('Escape');
@@ -143,7 +324,7 @@ async function main() {
 
     // Seed only the disposable test database to exercise pagination.
     await page.evaluate(async () => {
-      for (let i = 1; i <= 12; i++) await request('sports.save', { name: `Pagination ${i}`, type: 'team', gender: 'mixed', min_players: 1, max_players: 5, reserve_players: 0 });
+      for (let i = 1; i <= 12; i++) await request('sports.save', { name: `Pagination ${i}`, type: 'team', gender: 'mixed', min_players: 1, max_players: 5, reserve_players: 0, scoring_type: 'SCORE' });
     });
     await go('sports');
     await search.fill('');
@@ -155,13 +336,85 @@ async function main() {
     await search.fill('');
     await capture({ path: path.join(artifacts, 'sports-desktop.png'), fullPage: true });
 
+    // Creation has its own short wizard; existing tournaments open directly.
+    await go('matches');
+    await expect(page.locator('#tournament-list-page')).toBeVisible();
+    await expect(page.locator('#tournament-dashboard-page')).toBeHidden();
+    await page.getByRole('button', { name: 'เพิ่มรายการแข่งขัน', exact: true }).click();
+    await expect(page.locator('#tournament-create-page')).toBeVisible();
+    await expect(page.locator('#tournament-form-dialog')).toBeHidden();
+    await expect(page.locator('[data-create-indicator]')).toHaveCount(3);
+    await page.locator('#tournament-create-next').click();
+    await expect(page.locator('[data-create-step="1"]')).toBeVisible();
+    await page.locator('#tournament-form [name=name]').fill('UI Draft Tournament');
+    await page.locator('#tournament-form [name=academic_year]').fill('2569');
+    await page.locator('#tournament-create-next').click();
+    await expect(page.locator('[data-create-step="2"]')).toBeVisible();
+    await page.locator('#tournament-create-next').click();
+    await expect(page.locator('#tournament-form .form-error')).toContainText('เลือกกีฬา');
+    await page.locator('#tournament-sports-toggle').click();
+    await page.locator('#tournament-form input[name="sport_ids[]"]').nth(0).check();
+    await page.locator('#tournament-form input[name="sport_ids[]"]').nth(1).check();
+    await page.locator('#tournament-create-next').click();
+    await expect(page.locator('#tournament-create-review')).toContainText('UI Draft Tournament');
+    await capture({ path: path.join(artifacts, 'tournament-create-desktop.png') });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await noOverflow();
+    await expect(page.locator('#tournament-form [type=submit]')).toBeVisible();
+    await capture({ path: path.join(artifacts, 'tournament-create-mobile.png'), fullPage: true });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    const draftResponse = page.waitForResponse(response => response.url().includes('action=tournaments.save'));
+    await page.locator('#tournament-form [type=submit]').click();
+    const draft = (await (await draftResponse).json()).data;
+    expect(draft.status).toBe('draft');
+    expect(draft.sport_ids).toHaveLength(2);
+    await expect(page.locator('#tournament-dashboard-page')).toBeVisible();
+    await expect(page.locator('#tournament-create-page')).toBeHidden();
+    await expect(page.locator('#workflow-tournament-name')).toHaveText('UI Draft Tournament');
+    await expect(page.locator('#tournament-setup-status')).toHaveText('ยังเตรียมข้อมูลไม่ครบ');
+    await expect(page.locator('#workflow-tournament-status')).toHaveText('ฉบับร่าง');
+    await expect(page.locator('#tournament-publication-status')).toHaveText('ยังไม่มีผลการแข่งขัน');
+    await expect(page).toHaveURL(new RegExp('tournament=' + draft.id));
+    await page.reload();
+    await expect(page.locator('#workflow-tournament-name')).toHaveText('UI Draft Tournament');
+    await expect(page.locator('#tournament-dashboard-page')).toBeVisible();
+    await page.locator('[data-tournament-section="teams"]').click();
+    await page.locator('[data-tournament-section="sports"]').click();
+    await page.goBack();
+    await expect(page.locator('#tournament-dashboard-page')).toHaveAttribute('data-section', 'teams');
+    await expect(page.locator('#page-progress')).toBeHidden();
+    await page.goForward();
+    await expect(page.locator('#tournament-dashboard-page')).toHaveAttribute('data-section', 'sports');
+    await expect(page.locator('#page-progress')).toBeHidden();
+    await page.locator('[data-tournament-section="schedule"]').click();
+    await page.locator('#fixture-sport-select').selectOption(String(draft.sport_ids[0]));
+    await expect(page.locator('#generate-fixtures-button')).toBeDisabled();
+    await expect(page.locator('#fixture-requirements')).toContainText('อย่างน้อย 2 ทีม');
+    await page.locator('[data-tournament-section="teams"]').click();
+    await expect(page.locator('#teams-table')).toBeVisible();
+    await expect(page.locator('#members-table')).toBeVisible();
+    await page.locator('#tournament-back-to-list').click();
+    await expect(page.locator('#tournament-list-page')).toBeVisible();
+    const draftRow = page.locator('#tournaments-table tbody tr', { hasText: 'UI Draft Tournament' });
+    await expect(draftRow).toContainText('2 กีฬา');
+    await expect(draftRow).toContainText('0 ทีม');
+    await capture({ path: path.join(artifacts, 'tournament-list-desktop.png'), fullPage: true });
+    await draftRow.getByRole('button', { name: 'จัดการ', exact: true }).click();
+    await expect(page.locator('#tournament-dashboard-page')).toHaveAttribute('data-section', 'overview');
+    await expect(page.locator('[data-workflow-step-button], #workflow-publish-section')).toHaveCount(0);
+    await capture({ path: path.join(artifacts, 'tournament-dashboard-desktop.png') });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await noOverflow();
+    await capture({ path: path.join(artifacts, 'tournament-dashboard-mobile.png'), fullPage: true });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+
     const sections = {
-      sports: [{ id: 'organization-form' }],
+      sports: [{ id: 'organization-form' }, { id: 'sport-rule-form' }],
       matches: [
-        { id: 'tournament-form', step: 1 }, { id: 'sport-rule-form', step: 3 }, { id: 'student-form', step: 5 },
-        { id: 'team-form', step: 6 }, { id: 'member-form', step: 7 }, { id: 'match-form', step: 9 }, { id: 'result-form', step: 10 },
+        { id: 'student-form', step: 5 },
+        { id: 'team-form', step: 6 }, { id: 'member-form', step: 7 }, { id: 'match-form', step: 9 },
       ],
-      news: [{ id: 'news-form' }], users: [{ id: 'user-form' }],
+      users: [{ id: 'user-form' }],
     };
     for (const [view, forms] of Object.entries(sections)) {
       await go(view);
@@ -181,8 +434,15 @@ async function main() {
           await expect(heading.getByRole('button', { name: `เพิ่ม${label}`, exact: true })).toBeEnabled();
           await capture({ path: path.join(artifacts, 'student-scope-desktop.png'), fullPage: true });
         }
-        await heading.getByRole('button', { name: id === 'result-form' ? 'บันทึกผล' : `เพิ่ม${label}`, exact: true }).click();
+        await heading.getByRole('button', { name: `เพิ่ม${label}`, exact: true }).click();
         await expect(page.locator(`#${id}-dialog`)).toBeVisible();
+        if (id === 'sport-rule-form') {
+          await expect(page.locator('#scoring-type > option')).toHaveCount(12);
+          await page.locator('#scoring-type').selectOption('SET');
+          await expect(page.locator('#sport-rule-form [name=best_of]')).toBeVisible();
+          await expect(page.locator('#scoring-config-json')).toBeVisible();
+          await page.locator('#scoring-type').selectOption('SCORE');
+        }
         await page.keyboard.press('Escape');
         await expect(page.locator(`#${id}-dialog`)).toBeHidden();
       }
@@ -191,12 +451,19 @@ async function main() {
     await expect(page.locator('.tab[data-view-button="tasks"]')).toHaveCount(0);
     await expect(page.locator('#user-role-select option[value="viewer"]')).toHaveCount(0);
     await expect(page.locator('#invite-role-select option[value="viewer"]')).toHaveCount(0);
+    await expect(page.locator('#user-role-select option[value="registration_officer"]')).toHaveCount(0);
+    await expect(page.locator('#invite-role-select option[value="registration_officer"]')).toHaveCount(0);
+    await page.locator('[data-admin-tab="settings"]').click();
     await expect(page.locator('#staff-invites-enabled')).toBeChecked();
+    await page.locator('#admin-audit-details > summary').click();
     await page.locator('#audit-search').fill('login_failed');
     await expect(page.locator('#audit-full-table')).toContainText('login_failed');
     await page.locator('#staff-invites-enabled').uncheck();
+    await page.locator('#admin-invite-settings-form [type=submit]').click();
+    await page.locator('.confirm-dialog').getByRole('button', { name: 'ปิดใช้คำเชิญ', exact: true }).click();
     await expect.poll(async () => page.evaluate(async () => (await request('users.options')).staff_invites_enabled)).toBe(false);
     await page.locator('#staff-invites-enabled').check();
+    await page.locator('#admin-invite-settings-form [type=submit]').click();
     await expect.poll(async () => page.evaluate(async () => (await request('users.options')).staff_invites_enabled)).toBe(true);
     await page.evaluate(() => showView('matches'));
     await expect(page.locator('#view-matches')).toBeVisible();
@@ -206,25 +473,6 @@ async function main() {
     await page.getByRole('button', { name: 'นำเข้า CSV', exact: true }).click();
     await expect(page.locator('.import-dialog[open]')).toBeVisible();
     await page.keyboard.press('Escape');
-    await go('reports');
-    await noOverflow();
-    await expect(page.locator('#report-create-button')).toContainText('สรุปผลรายงาน');
-    await page.locator('#report-create-button').click();
-    await expect(page.locator('#report-builder')).toBeVisible();
-    await expect(page.locator('[data-report-step="3"]')).toBeVisible();
-    await page.locator('#report-summary-button').click();
-    await expect(page.locator('#report-output')).toContainText('สรุปผลลงในแบบรายงานทางการแล้ว');
-    await expect(page.locator('#report-editor-form [name=title]')).not.toHaveValue('');
-    await page.locator('#report-next-step').click();
-    await expect(page.locator('#stored-report-preview iframe')).toBeVisible();
-    await expect(page.locator('#report-download-pdf')).toBeVisible();
-    await capture({ path: path.join(artifacts, 'report-book-preview.png'), fullPage: true });
-    const pdfDownload = page.waitForEvent('download');
-    await page.locator('#report-download-pdf').click();
-    const downloadedReport = await pdfDownload;
-    await downloadedReport.saveAs(path.join(artifacts, 'report-book.pdf'));
-    expect(downloadedReport.suggestedFilename()).toMatch(/\.pdf$/i);
-
     await page.evaluate(() => showView('matches'));
     await expect(page.locator('#view-matches')).toBeVisible();
     await page.evaluate(() => setWorkflowStep(5, false));
@@ -316,17 +564,16 @@ async function main() {
     await expect(page.locator('#view-matches')).toBeVisible();
     await expect(page.locator('#page-progress')).toBeHidden();
     await expect.poll(() => page.evaluate(() => Boolean(document.querySelector('link[href*="workspace.css?v="]')))).toBe(true);
-    await expect.poll(() => page.locator('#workflow-steps').evaluate(element => getComputedStyle(element).display)).toBe('flex');
-    await page.locator('#workflow-tournament-select').selectOption(String(fixture.multi.id));
+    await expect(page.locator('#workflow-steps')).toHaveCount(0);
+    await page.evaluate(id => openTournamentDashboard(id), String(fixture.multi.id));
     await expect(page.locator('#workflow-tournament-name')).toContainText('Multi Sport UI Tournament');
     await page.evaluate(() => setWorkflowStep(2, false));
-    await expect(page.locator('#workflow-step-count')).toHaveText('ขั้นที่ 2 จาก 11');
-    await expect(page.locator('#workflow-step-title')).toHaveText('กีฬาที่จัดในทัวร์นาเมนต์');
-    await page.locator('#workflow-next-button').click();
-    await expect(page.locator('#workflow-step-title')).toHaveText('กำหนดชุดกติกาที่ใช้');
-    await expect(page.locator('[data-workflow-step-button="3"]')).toHaveAttribute('aria-current', 'step');
-    await page.locator('#workflow-previous-button').click();
-    await expect(page.locator('#workflow-step-title')).toHaveText('กีฬาที่จัดในทัวร์นาเมนต์');
+    await expect(page.locator('#workflow-step-title')).toHaveText('กีฬาและกติกา');
+    await page.locator('[data-tournament-section="results"]').click();
+    await expect(page.locator('#workflow-step-title')).toHaveText('ผลการแข่งขัน');
+    await expect(page.locator('#tournament-tools [aria-current="page"]')).toHaveText('ผลการแข่งขัน');
+    await page.locator('[data-tournament-section="sports"]').click();
+    await expect(page.locator('#workflow-step-title')).toHaveText('กีฬาและกติกา');
     await capture({ path: path.join(artifacts, 'tournament-workflow-desktop.png'), fullPage: true });
     await page.evaluate(() => setWorkflowStep(1, false));
     const multiTournamentRow = page.locator('#tournaments-table tbody tr', { hasText: 'Multi Sport UI Tournament' });
@@ -347,20 +594,20 @@ async function main() {
     if (new Set(tournamentPayload.sport_ids || []).size !== 2) throw new Error(`tournament form payload lost selected sports: ${JSON.stringify(tournamentPayload)}`);
     if (tournamentResult.data?.sport_ids?.length !== 2) throw new Error(`tournament API did not retain selected sports: payload=${JSON.stringify(tournamentPayload)} response=${JSON.stringify(tournamentResult)}`);
     await expect.poll(async () => page.evaluate(async () => (await request('tournaments.list')).find(row => row.name === 'Multi Sport UI Tournament')?.sport_ids?.length)).toBe(2);
-    await page.locator('#workflow-tournament-select').selectOption(String(fixture.tournament.id));
+    await page.evaluate(id => openTournamentDashboard(id), String(fixture.tournament.id));
     await expect(page.locator('#workflow-tournament-name')).toContainText('UI Tournament');
     await page.evaluate(() => setWorkflowStep(9, false));
     await page.getByRole('button', { name: 'เพิ่มแมตช์', exact: true }).click();
     await page.locator('#match-tournament-select').selectOption(String(fixture.tournament.id));
     await page.locator('#match-team1-select').selectOption(String(fixture.teams[0].id));
     await page.locator('#match-team2-select').selectOption(String(fixture.teams[1].id));
-    await page.locator('#match-form [name=scheduled_at]').fill('2026-10-20T18:30');
+    await page.locator('#match-form [name=scheduled_at]').fill(upcomingMatchAt);
     await page.locator('#match-form [type=submit]').click();
     await expect(page.locator('#match-form-dialog')).toBeHidden();
     await expect.poll(async () => page.evaluate(async id => (await request('matches.list', { tournament_id: id })).length, fixture.tournament.id)).toBe(1);
     await expect(page.locator('#matches-table tbody')).toContainText('UI Team A');
     await page.evaluate(() => showView('public'));
-    await expect(page.locator('#public-schedule .is-upcoming')).toBeVisible();
+    await expect(page.locator('#public-schedule .is-upcoming').first()).toBeVisible();
     await expect(page.locator('#public-schedule .upcoming-vs')).toHaveText('VS');
     await capture({ path: path.join(artifacts, 'public-upcoming-desktop.png'), fullPage: false });
     await page.evaluate(() => showView('public-bracket'));
@@ -394,55 +641,28 @@ async function main() {
     await page.locator('#matches-table').getByRole('button', { name: 'แก้ไข', exact: true }).click();
     await expect(page.locator('#match-team1-select')).toHaveValue(String(fixture.teams[0].id));
     await expect(page.locator('#match-team2-select')).toHaveValue(String(fixture.teams[1].id));
-    await expect(page.locator('#match-form [name=scheduled_at]')).toHaveValue('2026-10-20T18:30');
+    await expect(page.locator('#match-form [name=scheduled_at]')).toHaveValue(upcomingMatchAt);
     await page.locator('#match-form-dialog .modal-head .icon-button').click();
     await expect.poll(async () => await page.locator('.confirm-dialog').isVisible() || await page.locator('#match-form-dialog').isHidden()).toBe(true);
     if (await page.locator('.confirm-dialog').isVisible()) {
       await page.locator('.confirm-dialog').getByRole('button', { name: 'ยกเลิกการแก้ไข', exact: true }).click();
     }
     await expect(page.locator('#match-form-dialog')).toBeHidden();
-    await page.locator('#matches-table').getByRole('button', { name: 'ศูนย์แข่งขัน', exact: true }).click();
-    await expect(page.locator('#match-center-content')).toBeVisible();
-    await expect(page.locator('#center-roster1 .match-roster-member')).toHaveCount(3);
-    await expect(page.locator('#center-roster1')).toContainText('กิตติพงษ์');
-    await expect(page.locator('#match-event-form [type=submit]')).toBeDisabled();
-    await page.locator('#clock-start').click();
-    await expect(page.locator('#center-status')).toHaveClass(/status-live/);
-    await page.locator('#event-type').selectOption('foul');
-    await page.locator('#event-team').selectOption(String(fixture.teams[0].id));
-    await page.locator('#event-student').selectOption(String(fixture.athlete.id));
-    await page.locator('#match-event-form [type=submit]').click();
-    await expect(page.locator('#match-events-table tbody tr')).toHaveCount(1);
-    await expect(page.locator('#match-events-table tbody')).toContainText('กิตติพงษ์');
-    await page.locator('#match-finish').click();
-    await expect(page.locator('#result-form-dialog')).toBeVisible();
-    await page.locator('#result-form [name=team1_score]').fill('3');
-    await page.locator('#result-form [name=team2_score]').fill('1');
-    await page.locator('#result-form [type=submit]').click();
-    await expect(page.locator('#result-form-dialog')).toBeHidden();
-    await expect(page.locator('#center-score')).toContainText('3 - 1');
-    await expect(page.locator('#center-status')).toHaveClass(/status-completed/);
-    await expect(page.locator('#matches-table tbody')).toContainText('3');
-    expect(await page.evaluate(async () => (await request('public.results'))[0].team1_score)).toBe('3');
-    await page.evaluate(() => showView('public'));
-    await expect(page.locator('#public-home-results .result-versus .upcoming-team')).toHaveCount(2);
-    await expect(page.locator('#public-home-results .upcoming-team-mark img')).toHaveCount(0);
-    await page.evaluate(() => showView('matches'));
-    await page.locator('#matches-table').getByRole('button', { name: 'ศูนย์แข่งขัน', exact: true }).click();
-    await expect(page.locator('#match-center-content')).toBeVisible();
-    await expect(page.locator('#center-score')).toContainText('3 - 1');
-    await expect(page.locator('#match-events-table tbody tr')).toHaveCount(1);
-    expect((await page.evaluate(async id => request('standings.list', { tournament_id: id }), fixture.tournament.id))[0].points).toBe('3');
-    await capture({ path: path.join(artifacts, 'competition-center-desktop.png'), fullPage: true });
-    await page.setViewportSize({ width: 390, height: 844 });
-    await page.locator('#match-center-panel').scrollIntoViewIfNeeded();
-    await page.screenshot({ path: path.join(artifacts, 'competition-center-mobile.png'), fullPage: false, animations: 'disabled', style: '#toast { visibility: hidden; }' });
-    await page.setViewportSize({ width: 1440, height: 1000 });
+    const scoreMatchId = await page.evaluate(() => app.matches[0].id);
+    await expect(page.locator('#match-center-panel, #result-form, #match-event-form, #mode-recording, #race-center')).toHaveCount(0);
     await page.evaluate(() => showView('official'));
     await expect(page.locator('#view-official')).toBeVisible();
-    await expect(page.locator('#official-center-host > #match-center-panel')).toBeVisible();
-    await expect(page.locator('#official-completed-matches .official-match-item')).toHaveCount(1);
-    await expect(page.locator('#official-event-feed .official-event-item')).toHaveCount(1);
+    await expect(page.locator('#official-center-host .official-routing-empty')).toBeVisible();
+    await expect(page.locator('#official-live-matches, #official-upcoming-matches, #official-completed-matches')).toHaveCount(3);
+    await page.locator(`[data-official-match="${scoreMatchId}"]`).click();
+    await expect(page).toHaveURL(new RegExp(`/public/scoring/score\\.php\\?match_id=${scoreMatchId}$`));
+    await expect(page.locator('#score-workspace')).toBeVisible();
+    await page.goto(`${base}/?view=official`);
+    await expect(page.locator('#view-official')).toBeVisible();
+    await capture({ path: path.join(artifacts, 'dedicated-recording-router-desktop.png'), fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.screenshot({ path: path.join(artifacts, 'dedicated-recording-router-mobile.png'), fullPage: false, animations: 'disabled', style: '#toast { visibility: hidden; }' });
+    await page.setViewportSize({ width: 1440, height: 1000 });
     const officialRolePolicy = await page.evaluate(() => {
       const previous = app.user;
       app.user = { ...previous, role: 'result_officer' };
@@ -460,37 +680,10 @@ async function main() {
     await page.screenshot({ path: path.join(artifacts, 'match-official-mobile.png'), fullPage: false, animations: 'disabled', style: '#toast { visibility: hidden; }' });
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.evaluate(() => showView('matches'));
-    await page.locator('#matches-table select[aria-label="กรองสถานะ"]').selectOption({ index: 1 });
-    await expect(page.locator('#matches-table tbody tr')).toHaveCount(1);
+    await page.evaluate(() => setWorkflowStep(9, false));
+    await expect(page.locator('#matches-table select[aria-label="กรองสถานะ"]')).toBeVisible();
 
-    await go('news');
-    await page.getByRole('button', { name: 'เพิ่มข่าวประชาสัมพันธ์', exact: true }).click();
-    await page.locator('#news-template-select').selectOption('honor');
-    await expect(page.locator('#news-form [name=news_type]')).toHaveValue('hall_of_fame');
-    await expect(page.locator('#news-form [name=body]')).toHaveValue(/ผู้ได้รับรางวัล/);
-    expect(await page.locator('#news-ai-match option').count()).toBeGreaterThan(1);
-    await page.locator('#news-ai-match').selectOption({ index: 1 });
-    await page.locator('#news-ai-tone').selectOption('energetic');
-    await page.locator('#news-ai-instruction').fill('ชื่นชมนักกีฬาและเชิญชวนติดตามการแข่งขันครั้งต่อไป');
-    await page.locator('#news-ai-button').click();
-    await expect(page.locator('#news-form [name=title]')).not.toHaveValue('');
-    await expect(page.locator('#news-ai-status')).toContainText('ร่างอัตโนมัติ');
-    await page.locator('#banner-open-button').click();
-    await expect(page.locator('#banner-dialog')).toBeVisible();
-    await page.locator('#banner-template').selectOption('result');
-    await page.locator('#banner-headline').fill('UI TEAM A 3 - 1 UI TEAM B');
-    await expect.poll(async () => page.locator('#banner-canvas').evaluate(canvas => canvas.toDataURL().length)).toBeGreaterThan(10000);
-    await capture({ path: path.join(artifacts, 'news-banner-studio.png') });
-    await page.locator('#banner-use-button').click();
-    await expect(page.locator('#banner-dialog')).toBeHidden();
-    await expect(page.locator('#news-cover-url')).toHaveValue(/uploads\/news\/banner-/);
-    const generatedBannerUrl = await page.locator('#news-cover-url').inputValue();
-    generatedUploads.push(path.join(root, 'public', 'uploads', 'news', path.basename(new URL(generatedBannerUrl, base).pathname)));
-    await expect(page.locator('#news-cover-preview img')).toBeVisible();
-    await page.keyboard.press('Escape');
-    await expect(page.locator('.confirm-dialog')).toBeVisible();
-    await page.locator('.confirm-dialog').getByRole('button', { name: 'ยกเลิกการแก้ไข', exact: true }).click();
-    await expect(page.locator('#news-form-dialog')).toBeHidden();
+    await runNewsUxFlow({ page, base, artifacts, generatedUploads, root, cleanupFixtures: true });
 
     for (const width of [320, 390, 768]) {
       await page.setViewportSize({ width, height: 844 });
@@ -521,7 +714,7 @@ async function main() {
         await page.locator('#athlete-sport-filter').selectOption(String(fixture.teams[0].id));
         await noOverflow();
         await capture({ path: path.join(artifacts, 'public-athletes-flow-mobile.png'), fullPage: true });
-        await page.evaluate(() => showView('public-bracket'));
+        await page.evaluate(async () => { await loadPublicHome(); showView('public-bracket'); });
         await page.locator('#bracket-tournament-filter').selectOption(String(draw.tournament.id));
         await page.locator('#bracket-sport-filter').selectOption(String(draw.sportId));
         await expect(page.locator('#public-bracket-rounds .bracket-group')).toHaveCount(2);
@@ -530,20 +723,7 @@ async function main() {
         await page.evaluate(() => showView('matches'));
         await expect(page.locator('#view-matches')).toBeVisible();
       }
-      await go('news');
-      await page.getByRole('button', { name: 'เพิ่มข่าวประชาสัมพันธ์', exact: true }).click();
-      expect(await page.locator('#news-form-dialog').evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
-      await page.locator('#banner-open-button').click();
-      await expect(page.locator('#banner-dialog')).toBeVisible();
-      expect(await page.locator('#banner-dialog').evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
-      if (width === 390) {
-        await capture({ path: path.join(artifacts, 'news-banner-mobile.png') });
-        await page.locator('.banner-workspace').scrollIntoViewIfNeeded();
-        await capture({ path: path.join(artifacts, 'news-banner-mobile-canvas.png') });
-      }
-      await page.locator('#banner-close-button').click();
-      await expect(page.locator('#banner-dialog')).toBeHidden();
-      await page.keyboard.press('Escape');
+
     }
     await page.evaluate(async data => request('matches.save', {
       tournament_id: data.tournamentId,
@@ -552,7 +732,7 @@ async function main() {
       team2_id: data.team2Id,
       round_name: 'รอบชิงชนะเลิศ',
       match_number: 2,
-      scheduled_at: '2026-10-25T19:00',
+      scheduled_at: data.scheduledAt,
       venue: 'สนามกีฬากลาง',
       status: 'scheduled',
     }), {
@@ -560,18 +740,18 @@ async function main() {
       sportId: fixture.teams[0].sport_id,
       team1Id: fixture.teams[0].id,
       team2Id: fixture.teams[1].id,
+      scheduledAt: secondUpcomingMatchAt,
     });
     await page.locator('#logout-button').click();
     await expect(page.locator('#view-public')).toBeVisible();
-    await expect(page.locator('#public-home-results .is-completed')).toBeVisible();
-    await expect(page.locator('#public-home-results .result-score')).toContainText('3');
-    await expect(page.locator('#public-home-results .result-status')).toContainText('จบการแข่งขัน');
+    await expect(page.locator('#public-schedule .is-upcoming').first()).toBeVisible();
+    await expect(page.locator('#public-home-results .empty-state')).toBeVisible();
     await page.locator('.split:has(.public-match-scroll)').screenshot({ path: path.join(artifacts, 'public-matchday-desktop.png'), animations: 'disabled', style: '.topbar { visibility: hidden !important; }' });
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(page.locator('#page-progress')).toBeHidden();
     await noOverflow();
     await capture({ path: path.join(artifacts, 'public-mobile.png'), fullPage: true });
-    await expect(page.locator('#public-schedule .is-upcoming')).toBeVisible();
+    await expect(page.locator('#public-schedule .is-upcoming').first()).toBeVisible();
     expect(await page.locator('.split:has(.public-match-scroll)').evaluate(element => getComputedStyle(element).gridTemplateColumns.split(' ').length)).toBe(1);
     await page.locator('.split:has(.public-match-scroll)').screenshot({ path: path.join(artifacts, 'public-matchday-mobile.png'), animations: 'disabled', style: '.topbar { visibility: hidden !important; }' });
     await page.locator('.news-read').first().click();
@@ -579,9 +759,34 @@ async function main() {
     expect(await page.locator('#view-public-news-detail').evaluate(el => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
     await capture({ path: path.join(artifacts, 'news-article-mobile.png') });
     await page.locator('.article-back').click();
+    // The public/mobile scenario above deliberately logged out. Start a real new session first.
+    await page.locator('#login-toggle').click();
+    await page.locator('#login-form [name=email]').fill('admin@rmutt.local');
+    await page.locator('#login-form [name=password]').fill('Temp@1234');
+    await page.locator('#login-form [type=submit]').click();
+    await expect(page.locator('#view-dashboard')).toBeVisible();
+    await expect(page.locator('#page-progress')).toBeHidden();
+    // Both supported PHP entry points must retain asset URLs, routing, and the session.
+    for (const entry of ['/', '/public/']) {
+      await page.goto(`${base}${entry}?view=news`);
+      await expect(page.locator('#view-news')).toBeVisible();
+      await expect(page.locator('#news-table tbody tr').first()).toBeVisible();
+      expect(await page.evaluate(() => app.user.role)).toBe('super_admin');
+      await page.locator('#news-create-button').click();
+      await expect(page.locator('#news-form')).toBeVisible();
+      await expect(page.locator('#view-news-editor')).toBeVisible();
+      await page.locator('[data-news-back]').click();
+      await expect(page.locator('#view-news')).toBeVisible();
+      await page.goto(`${base}${entry}?view=public-news-detail&id=1`);
+      await expect(page.locator('#article-title')).toHaveText('เปิดระบบ Sport Tournament');
+      await expect(page).toHaveTitle(/เปิดระบบ Sport Tournament/);
+    }
     expect(errors).toEqual([]);
-    console.log('PASS: separate news detail route/linking, login/error recovery, AI news draft, banner render/upload, sport CRUD, discard/delete confirmation, clean create form, search/pagination/status filtering, all editor dialogs, CSV modal, match creation/edit/result, and responsive layouts at 320/390/768/1440px.');
+    expect(consoleErrors).toEqual([]);
+    expect(phpErrors).toEqual([]);
+    console.log('PASS: dedicated recording routing, legacy recording UI removal, news, CRUD editors, CSV, match creation, and responsive layouts at 320/390/768/1440px.');
     console.log(`Screenshots: ${artifacts}`);
+    if (newsBaselineCss) console.log(`PASS: ${newsVisualChecks} views have identical geometry/all computed styles, including dialog backdrops; paired raster checks normalize only GPU blur/shadows (${newsRasterOnlyDifferences} minor raster differences).`);
   } finally {
     if (browser) await browser.close();
     const exited = new Promise(resolve => server.once('exit', resolve));

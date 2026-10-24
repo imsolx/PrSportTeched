@@ -14,19 +14,54 @@ const app = {
   news: [],
   users: [],
   invites: [],
-  reports: [],
   sportRules: [],
   organizations: null,
-  matchCenter: null,
-  clockTimer: null,
-  reportOptions: null,
-  reportStep: 1,
-  activeReport: null,
+  officialOptions: [],
+  matchAssignments: [],
   currentView: 'public',
   allowedViews: [],
+  presentationRole: null,
   workflow: { tournamentId: '', step: 1, data: null },
 };
 const baseDocumentTitle = document.title;
+
+const rolePresentationOptions = [
+  {
+    value: 'super_admin', label: 'System Admin', icon: 'shield-check',
+    description: 'ควบคุมระบบทั้งหมด รวมถึงบัญชีผู้ใช้งาน',
+    views: ['dashboard', 'sports', 'students', 'matches', 'official', 'news', 'users'],
+    access: ['แดชบอร์ด', 'กีฬาและกติกา', 'นักกีฬา', 'ทัวร์นาเมนต์', 'บันทึกผล', 'ข่าวสาร', 'ผู้ดูแลระบบ'],
+  },
+  {
+    value: 'admin', label: 'Operation Admin', icon: 'layout-dashboard',
+    description: 'จัดการงานแข่งขันและทะเบียนนักกีฬาทุกส่วน ยกเว้นบัญชีผู้ใช้',
+    views: ['dashboard', 'sports', 'students', 'matches', 'official', 'news'],
+    access: ['แดชบอร์ด', 'กีฬาและกติกา', 'นักกีฬา', 'ทัวร์นาเมนต์', 'บันทึกผล', 'ข่าวสาร'],
+  },
+  {
+    value: 'sport_head', label: 'Sport Manager', icon: 'trophy',
+    description: 'ดูแลงานแข่งขันและผลของกีฬาที่รับผิดชอบ',
+    views: ['dashboard', 'matches', 'official'],
+    access: ['แดชบอร์ด', 'ทัวร์นาเมนต์', 'ศูนย์ควบคุมการแข่งขัน'],
+  },
+  {
+    value: 'result_officer', label: 'Match Official', icon: 'timer',
+    description: 'บันทึกและยืนยันผลการแข่งขันที่ได้รับมอบหมาย',
+    views: ['official'],
+    access: ['ศูนย์ควบคุมการแข่งขัน'],
+  },
+  {
+    value: 'public_relations', label: 'ฝ่ายประชาสัมพันธ์', icon: 'newspaper',
+    description: 'จัดทำและเผยแพร่ข่าวการแข่งขัน',
+    views: ['dashboard', 'news'],
+    access: ['แดชบอร์ด', 'ข่าวสาร'],
+  },
+];
+const presentationStorageKey = 'prsport.presentationRole';
+const actualRole = () => app.user?.role || 'guest';
+const activeRole = () => app.presentationRole || actualRole();
+const rolePresentation = role => rolePresentationOptions.find(option => option.value === role);
+const defaultAdminView = role => role === 'result_officer' ? 'official' : 'dashboard';
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -89,276 +124,40 @@ document.addEventListener('DOMContentLoaded', () => {
   initBannerStudio();
   bindNavigation();
   bindAuth();
+  bindRoleSwitcher();
   bindForms();
+  bindAdminUsers();
   bindTournamentWorkspace();
+  restorePresentationRole();
   updateSessionUi();
   const inviteToken = new URLSearchParams(window.location.search).get('invite');
   if (inviteToken) {
     openInviteAccept(inviteToken);
   } else {
     const requestedView = new URLSearchParams(window.location.search).get('view');
-    const defaultView = app.user?.role === 'result_officer' ? 'official' : 'public';
-    showView(requestedView && $(`#view-${requestedView}`) ? requestedView : defaultView);
+    const initialView = requestedView && $(`#view-${requestedView}`) ? requestedView : 'public';
+    showView(initialView, { history: 'replace' });
   }
 });
 
 window.addEventListener('popstate', () => {
   const requestedView = new URLSearchParams(window.location.search).get('view');
-  showView(requestedView && $(`#view-${requestedView}`) ? requestedView : 'public');
+  showView(requestedView && $(`#view-${requestedView}`) ? requestedView : 'public', { history: 'none' });
 });
 
 function bindNavigation() {
   $$('[data-view-button]').forEach(button => {
     button.addEventListener('click', event => {
       event.preventDefault();
+      if (button.dataset.viewButton === 'matches') tournamentUi.page = 'list';
       if (button.dataset.viewButton === 'public-standings' && button.closest('#view-public-results')) {
         $('#public-standings-tournament-filter').value = $('#results-tournament-filter').value;
       }
-      showView(button.dataset.viewButton);
+      showView(button.dataset.viewButton, { history: 'push' });
     });
   });
 }
 
-function bindTournamentWorkspace() {
-  $$('[data-workflow-step-button]').forEach(button => {
-    button.addEventListener('click', () => setWorkflowStep(Number(button.dataset.workflowStepButton)));
-  });
-  $('#workflow-tournament-select').addEventListener('change', event => loadTournamentWorkspace(event.target.value, false));
-  $('#workflow-settings-button').addEventListener('click', openWorkflowSettings);
-  $('#workflow-previous-button').addEventListener('click', () => setWorkflowStep(app.workflow.step - 1));
-  $('#workflow-next-button').addEventListener('click', () => setWorkflowStep(app.workflow.step + 1));
-  $('#generate-fixtures-button').addEventListener('click', async event => {
-    await runTask(event.currentTarget, async () => {
-      const result = await request('tournaments.generateFixtures', {
-        tournament_id: app.workflow.tournamentId,
-        sport_id: $('#fixture-sport-select').value,
-        group_count: $('#fixture-group-count').value,
-      });
-      await loadMatchesAdmin();
-      toast(`สร้างคู่แข่งขัน ${result.matches.length} คู่แล้ว${result.bye_team_ids?.length ? ` · ${result.bye_team_ids.length} ทีมผ่านรอบแรกอัตโนมัติ` : ''}`);
-    });
-  });
-  $('#workflow-edit-sports').addEventListener('click', () => openSelectedTournamentEditor());
-  $('#workflow-department-sport').addEventListener('change', renderWorkflowDepartmentOptions);
-  $('#workflow-save-departments').addEventListener('click', async event => {
-    await runTask(event.currentTarget, async () => {
-      const sportId = $('#workflow-department-sport').value;
-      const departmentCodes = $$('input[name="workflow_department_codes[]"]:checked').map(input => input.value);
-      await request('tournaments.departments', {
-        tournament_id: app.workflow.tournamentId,
-        sport_id: sportId,
-        department_codes: departmentCodes,
-      });
-      await loadTournamentWorkspace(app.workflow.tournamentId, false);
-      toast('บันทึกสาขาที่เข้าร่วมแล้ว');
-    });
-  });
-  $$('[data-workflow-view]').forEach(button => {
-    button.addEventListener('click', () => showView(button.dataset.workflowView));
-  });
-}
-
-function setWorkflowStep(step, scroll = true) {
-  app.workflow.step = Math.min(11, Math.max(1, Number(step) || 1));
-  $$('[data-workflow-step]').forEach(section => {
-    const steps = String(section.dataset.workflowStep).split(/\s+/).map(Number);
-    section.hidden = !steps.includes(app.workflow.step);
-  });
-  if (app.user?.role === 'sport_head') $('#fixture-generator').hidden = true;
-  $$('[data-workflow-step-button]').forEach(button => {
-    const number = Number(button.dataset.workflowStepButton);
-    button.classList.toggle('active', number === app.workflow.step);
-    button.setAttribute('aria-current', number === app.workflow.step ? 'step' : 'false');
-  });
-  const details = workflowStepDetails(app.workflow.step);
-  const complete = Boolean(app.workflow.data?.steps?.[app.workflow.step]);
-  $('#workflow-step-count').textContent = `ขั้นที่ ${app.workflow.step} จาก 11`;
-  $('#workflow-step-title').textContent = details.title;
-  $('#workflow-step-description').textContent = details.description;
-  $('#workflow-settings-button span').textContent = details.action;
-  $('#workflow-step-state').textContent = complete ? 'เสร็จแล้ว' : 'กำลังทำ';
-  $('#workflow-step-state').classList.toggle('complete', complete);
-  $('#workflow-previous-button').disabled = app.workflow.step === 1;
-  $('#workflow-next-button').disabled = app.workflow.step === 11;
-  $('#workflow-next-button span').textContent = app.workflow.step === 10 ? 'ไปข่าวและรายงาน' : 'ขั้นถัดไป';
-  $('#workflow-navigation-hint').textContent = complete
-    ? 'ขั้นนี้เรียบร้อยแล้ว สามารถไปขั้นถัดไปได้'
-    : details.hint;
-  if (scroll) {
-    const activeButton = $(`[data-workflow-step-button="${app.workflow.step}"]`);
-    activeButton?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
-    $('#workflow-step-title').scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
-}
-
-function workflowStepDetails(step) {
-  return ({
-    1: { title: 'ข้อมูลทัวร์นาเมนต์', action: app.workflow.tournamentId ? 'แก้ไขข้อมูลทัวร์นาเมนต์' : 'สร้างทัวร์นาเมนต์', description: 'กำหนดชื่อ วันเริ่ม วันสิ้นสุด รูปแบบการแข่งขัน และสถานะ', hint: 'เริ่มจากสร้างทัวร์นาเมนต์และบันทึกข้อมูลหลัก' },
-    2: { title: 'กีฬาที่จัดในทัวร์นาเมนต์', action: 'แก้ไขรายการกีฬา', description: 'เลือกกีฬาจากข้อมูลกีฬากลางเพียงจุดเดียว แล้วใช้รายการเดียวกันตลอดทั้งระบบ', hint: 'ต้องเลือกกีฬาอย่างน้อย 1 รายการก่อนกำหนดชุดกติกา' },
-    3: { title: 'กำหนดชุดกติกาที่ใช้', action: 'เลือกชุดกติกา', description: 'เลือกชุดกติกากลางของกีฬาแต่ละรายการ โดยไม่ต้องสร้างกติกาซ้ำในทัวร์นาเมนต์', hint: 'ยืนยันชุดกติกาของกีฬาแต่ละรายการให้พร้อมใช้งาน' },
-    4: { title: 'สังกัดที่เข้าร่วม (ถ้ามี)', action: 'เลือกสังกัด', description: 'กำหนดสังกัดเฉพาะงานที่ต้องใช้ข้อมูลนี้', hint: 'ข้ามขั้นนี้ได้สำหรับทัวร์นาเมนต์ทั่วไป' },
-    5: { title: 'เพิ่มรายชื่อนักกีฬา', action: 'เพิ่มนักกีฬา', description: 'เตรียมรายชื่อนักกีฬาที่จะเพิ่มเข้าทีม', hint: 'เพิ่มรายชื่อหรือนำเข้าจากไฟล์ CSV' },
-    6: { title: 'สร้างทีมแข่งขัน', action: 'สร้างทีมใหม่', description: 'สร้างทีมในกีฬาและทัวร์นาเมนต์ที่เลือก', hint: 'เพิ่มทีมอย่างน้อย 1 ทีมในทัวร์นาเมนต์นี้' },
-    7: { title: 'จัดสมาชิกเข้าทีม', action: 'เพิ่มสมาชิกใหม่', description: 'เลือกนักกีฬา บทบาท และหมายเลขเสื้อให้สมาชิกแต่ละทีม', hint: 'เพิ่มสมาชิกให้ทีมที่สร้างไว้ก่อนตรวจความพร้อม' },
-    8: { title: 'ตรวจสอบความพร้อม', action: 'ตรวจรายการที่ยังขาด', description: 'ตรวจว่ากติกา ทีม และสมาชิกพร้อมสำหรับทุกกีฬา', hint: 'แก้รายการสีส้มให้ครบก่อนสร้างตารางแข่งขัน' },
-    9: { title: 'สร้างตารางแข่งขัน', action: 'สร้างแมตช์ใหม่', description: 'จัดสายอัตโนมัติหรือกำหนดคู่ รอบ วันเวลา สนาม และผู้ตัดสิน', hint: 'สร้างสายตามรูปแบบการแข่งขัน แล้วกำหนดเวลาแต่ละแมตช์' },
-    10: { title: 'บันทึกผลการแข่งขัน', action: 'เปิดฟอร์มบันทึกผล', description: 'บันทึกคะแนน ผู้ชนะ เวลา และเหตุการณ์ของแต่ละแมตช์', hint: 'เลือกแมตช์ที่แข่งขันแล้วเพื่อบันทึกผล' },
-    11: { title: 'จัดทำข่าวและรายงาน', action: 'จัดทำข่าว', description: 'นำผลการแข่งขันที่ยืนยันแล้วไปจัดทำข่าวและรายงานสรุป', hint: 'เลือกจัดทำข่าวประชาสัมพันธ์หรือรายงานผล' },
-  })[step];
-}
-
-function openSelectedTournamentEditor() {
-  const tournament = app.workflow.data?.tournament;
-  openEditor('tournament-form', tournament || null);
-}
-
-function openWorkflowSettings() {
-  const step = app.workflow.step;
-  const role = app.user?.role;
-  const allowed = step <= 4 ? ['super_admin', 'admin']
-    : step === 5 ? ['super_admin', 'admin', 'registration_officer']
-      : [6, 7, 9].includes(step) ? ['super_admin', 'admin', 'sport_head']
-        : step === 10 ? ['super_admin', 'admin', 'result_officer'] : [];
-  if (allowed.length && !allowed.includes(role)) {
-    toast('ไม่มีสิทธิ์แก้ไขขั้นตอนนี้', true);
-    return;
-  }
-  if (step <= 2) return openSelectedTournamentEditor();
-  if (step === 3) {
-    const sport = app.workflow.data?.sports?.[0];
-    if (sport) openTournamentSportSetting(sport);
-    else toast('กรุณาเลือกกีฬาในทัวร์นาเมนต์ก่อน', true);
-    return;
-  }
-  if (step === 4) {
-    $('#workflow-department-sport').focus();
-    return;
-  }
-  if (step === 5) {
-    openStudentImport();
-    return;
-  }
-  if (step === 6) return openEditor('team-form', { tournament_id: app.workflow.tournamentId });
-  if (step === 7) return openEditor('member-form');
-  if (step === 9) return openEditor('match-form', { tournament_id: app.workflow.tournamentId });
-  if (step === 10) return openEditor('result-form');
-  if (step === 11) return showView('news');
-  $('#workflow-readiness').scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
-
-async function loadTournamentWorkspace(tournamentId = '', resetStep = false) {
-  const selected = String(tournamentId || app.workflow.tournamentId || app.tournaments[0]?.id || '');
-  app.workflow.tournamentId = selected;
-  setOptions($('#workflow-tournament-select'), app.tournaments, row => row.id, row => row.name, 'เลือกทัวร์นาเมนต์');
-  $('#workflow-tournament-select').value = selected;
-  if (!selected) {
-    app.workflow.data = null;
-    $('#workflow-tournament-name').textContent = 'ยังไม่มีทัวร์นาเมนต์';
-    $('#workflow-tournament-meta').textContent = 'สร้างทัวร์นาเมนต์เพื่อเริ่มจัดการข้อมูล';
-    $('#workflow-notice span').textContent = 'เริ่มจากสร้างทัวร์นาเมนต์ แล้วเลือกกีฬาที่จัด';
-    updateWorkflowProgress();
-    setWorkflowStep(1, false);
-    return;
-  }
-  const data = await request('tournaments.workspace', { tournament_id: selected });
-  app.workflow.data = data;
-  const tournament = data.tournament;
-  $('#workflow-tournament-name').textContent = tournament.name;
-  $('#workflow-tournament-meta').textContent = `${tournament.starts_at || 'ยังไม่กำหนดวันเริ่ม'} – ${tournament.ends_at || 'ยังไม่กำหนดวันสิ้นสุด'} · ${tournament.sport_name || 'ยังไม่เลือกกีฬา'}`;
-  setOptions($('#fixture-sport-select'), data.sports || [], row => row.id, row => row.name, 'เลือกกีฬา');
-  $('#workflow-tournament-status').textContent = workspace.labels[tournament.status] || tournament.status;
-  $('#workflow-notice span').textContent = `ขั้นที่แนะนำถัดไป: ${data.suggested_step} · ${$$('[data-workflow-step-button]')[data.suggested_step - 1]?.textContent.trim() || ''}`;
-  $$('[data-workflow-step-button]').forEach(button => {
-    const number = Number(button.dataset.workflowStepButton);
-    button.classList.toggle('complete', Boolean(data.steps[number]));
-    button.classList.toggle('attention', number === Number(data.suggested_step));
-  });
-  updateWorkflowProgress();
-  renderWorkflowSports();
-  renderWorkflowDepartmentOptions();
-  renderWorkflowReadiness();
-  syncStudentScope();
-  if (resetStep) app.workflow.step = 1;
-  setWorkflowStep(app.workflow.step, false);
-  refreshIcons($('#view-matches'));
-}
-
-function updateWorkflowProgress() {
-  const steps = app.workflow.data?.steps || {};
-  const complete = Array.from({ length: 11 }, (_, index) => Boolean(steps[index + 1])).filter(Boolean).length;
-  $('#workflow-progress-label').textContent = `ความคืบหน้า ${complete} จาก 11 ขั้น`;
-  $('#workflow-progress-bar').style.width = `${Math.round((complete / 11) * 100)}%`;
-}
-
-function renderWorkflowSports() {
-  const rows = app.workflow.data?.sports || [];
-  renderTable('#workflow-sports-table', [
-    ['name', 'กีฬา'],
-    ['type', 'ประเภท', value => workspace.labels[value] || value],
-    ['rule_name', 'ชุดกติกาที่ใช้', (value, row) => value ? `v${row.rule_version_number} · ${value}` : 'ยังไม่เลือก'],
-    ['setting_status', 'สถานะ', value => ({ pending: 'ยังตั้งค่าไม่ครบ', ready: 'พร้อมใช้งาน', locked: 'ล็อกแล้ว' }[value] || value)],
-    ['department_count', 'สังกัด'],
-    ['team_count', 'ทีม'],
-    ['actions', 'จัดการ', (_, row) => ['super_admin', 'admin'].includes(app.user?.role) ? rowActions([
-      ['เลือกชุดกติกา', () => openTournamentSportSetting(row)],
-    ]) : '-'],
-  ], rows);
-}
-
-function openTournamentSportSetting(sport) {
-  const rules = app.sportRules.filter(row => String(row.sport_id) === String(sport.id));
-  if (!rules.length) {
-    toast(`กีฬา ${sport.name} ยังไม่มีชุดกติกา กรุณาสร้างชุดกติกาในเมนูกีฬาและชุดกติกาก่อน`, true);
-    showView('sports');
-    const ruleForm = $('#sport-rule-form');
-    ruleForm.elements.sport_id.value = sport.id;
-    ruleForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    return;
-  }
-  const activeRule = rules.find(row => Number(row.is_active));
-  setOptions($('#workflow-rule-version'), rules, row => row.id, row => `v${row.version_number} · ${row.name}${Number(row.is_active) ? ' · ชุดหลัก' : ' · เก็บประวัติ'}`, 'เลือกชุดกติกา');
-  openEditor('tournament-sport-setting-form', {
-    tournament_id: app.workflow.tournamentId,
-    sport_id: sport.id,
-    sport_name: sport.name,
-    rule_version_id: sport.rule_version_id || activeRule?.id || '',
-    status: sport.setting_status || 'pending',
-    notes: sport.setting_notes || '',
-  });
-}
-
-function renderWorkflowDepartmentOptions() {
-  const sports = app.workflow.data?.sports || [];
-  const select = $('#workflow-department-sport');
-  const current = select.value;
-  setOptions(select, sports, row => row.id, row => row.name, 'เลือกกีฬา');
-  if (sports.some(row => String(row.id) === String(current))) select.value = current;
-  const sport = sports.find(row => String(row.id) === String(select.value));
-  const selected = new Set((sport?.department_codes || []).map(String));
-  $('#workflow-department-options').innerHTML = app.departments.map(row => `
-    <label class="department-choice"><input type="checkbox" name="workflow_department_codes[]" value="${escapeAttr(row.code)}" ${selected.has(String(row.code)) ? 'checked' : ''}><span><strong>${escapeHtml(row.code)}</strong>${escapeHtml(row.name)}</span></label>
-  `).join('') || emptyState('ยังไม่มีข้อมูลสาขา');
-  $('#workflow-department-summary').innerHTML = sports.length ? `
-    <h3>สรุปสาขาที่กำหนด</h3>${sports.map(row => `<div><strong>${escapeHtml(row.name)}</strong><span>${Number(row.department_count || 0)} สาขา</span></div>`).join('')}
-  ` : '<p class="muted">เลือกกีฬาในทัวร์นาเมนต์ก่อน</p>';
-}
-
-function renderWorkflowReadiness() {
-  const data = app.workflow.data;
-  const target = $('#workflow-readiness');
-  if (!data?.sports?.length) {
-    target.innerHTML = emptyState('ยังไม่มีกีฬาในทัวร์นาเมนต์');
-    return;
-  }
-  const checks = [
-    ['rule_ready', 'กติกา'], ['departments_ready', 'สาขา'], ['roster_ready', 'ทีม/สมาชิก'], ['schedule_ready', 'ตารางแข่งขัน'],
-  ];
-  target.innerHTML = `<div class="readiness-list">${data.sports.map(sport => `
-    <article><div><strong>${escapeHtml(sport.name)}</strong><span>${sport.team_count} ทีม · ${sport.member_count} คน · ${sport.match_count} แมตช์</span></div>
-    <div class="readiness-checks">${checks.map(([key, label]) => `<span class="${sport[key] ? 'done' : 'pending'}">${icon(sport[key] ? 'circle-check' : 'circle-alert')}${label}</span>`).join('')}</div></article>
-  `).join('')}</div>`;
-  refreshIcons(target);
-}
 
 function bindAuth() {
   $('#login-toggle').addEventListener('click', () => $('#login-dialog').showModal());
@@ -373,6 +172,7 @@ function bindAuth() {
     const result = await request('auth.logout');
     app.user = result.user;
     app.csrf = result.csrf;
+    clearPresentationRole();
     updateSessionUi();
     showView('public');
     toast('ออกจากระบบแล้ว');
@@ -385,11 +185,12 @@ function bindAuth() {
     const result = await request('auth.login', formData(form));
     app.user = result.user;
     app.csrf = result.csrf;
+    clearPresentationRole();
     $('#login-dialog').close();
     form.reset();
     updateSessionUi();
     await loadAdminRefs();
-    showView(app.user?.role === 'result_officer' ? 'official' : 'dashboard');
+    showView(defaultAdminView(actualRole()));
     toast('เข้าสู่ระบบแล้ว');
     });
   });
@@ -408,7 +209,72 @@ function bindAuth() {
   });
 }
 
+function bindRoleSwitcher() {
+  const dialog = $('#role-switch-dialog');
+  $('#role-switch-button').addEventListener('click', openRoleSwitcher);
+  $('#role-switch-close').addEventListener('click', () => dialog.close());
+  $('#role-switch-reset').addEventListener('click', () => setPresentationRole(null));
+  $('#role-preview-exit').addEventListener('click', () => setPresentationRole(null));
+  bindDialogDismiss(dialog, () => dialog.close());
+}
+
+function restorePresentationRole() {
+  if (actualRole() !== 'super_admin') {
+    sessionStorage.removeItem(presentationStorageKey);
+    return;
+  }
+  const storedRole = sessionStorage.getItem(presentationStorageKey);
+  if (storedRole && storedRole !== 'super_admin' && rolePresentation(storedRole)) {
+    app.presentationRole = storedRole;
+  }
+}
+
+function clearPresentationRole() {
+  app.presentationRole = null;
+  sessionStorage.removeItem(presentationStorageKey);
+}
+
+function renderRoleSwitcher() {
+  const selectedRole = activeRole();
+  const selected = rolePresentation(selectedRole);
+  $('#role-switch-status').innerHTML = `
+    <span>มุมมองปัจจุบัน</span>
+    <strong>${icon(selected?.icon || 'user')}${escapeHtml(selected?.label || selectedRole)}</strong>
+    <small>${app.presentationRole ? 'กำลังจำลองมุมมองสำหรับการพรีเซนต์' : 'มุมมองตามสิทธิ์บัญชีจริง'}</small>`;
+  $('#role-switch-grid').innerHTML = rolePresentationOptions.map(option => `
+    <button class="role-option${option.value === selectedRole ? ' active' : ''}" type="button" data-presentation-role="${option.value}" aria-pressed="${option.value === selectedRole}">
+      <span class="role-option-icon">${icon(option.icon)}</span>
+      <span class="role-option-copy"><strong>${escapeHtml(option.label)}</strong><small>${escapeHtml(option.description)}</small></span>
+      <span class="role-option-state">${option.value === selectedRole ? `${icon('check')} กำลังดู` : 'ดูมุมมองนี้'}</span>
+      <span class="role-access-list">${option.access.map(item => `<span>${escapeHtml(item)}</span>`).join('')}</span>
+    </button>`).join('');
+  $$('[data-presentation-role]', $('#role-switch-grid')).forEach(button => {
+    button.addEventListener('click', () => setPresentationRole(button.dataset.presentationRole));
+  });
+  $('#role-switch-reset').hidden = !app.presentationRole;
+  refreshIcons($('#role-switch-dialog'));
+}
+
+function openRoleSwitcher() {
+  renderRoleSwitcher();
+  $('#role-switch-dialog').showModal();
+}
+
+async function setPresentationRole(role) {
+  if (actualRole() !== 'super_admin') return;
+  const nextRole = role && role !== actualRole() && rolePresentation(role) ? role : null;
+  app.presentationRole = nextRole;
+  if (nextRole) sessionStorage.setItem(presentationStorageKey, nextRole);
+  else sessionStorage.removeItem(presentationStorageKey);
+  if ($('#role-switch-dialog').open) $('#role-switch-dialog').close();
+  updateSessionUi();
+  await showView(defaultAdminView(activeRole()), { history: 'push' });
+  toast(nextRole ? `กำลังจำลองมุมมอง ${rolePresentation(nextRole).label}` : 'กลับสู่มุมมอง System Admin แล้ว');
+}
+
 function bindForms() {
+  $('#scoring-type')?.addEventListener('change', () => syncScoringConfigFields(true));
+  syncScoringConfigFields();
   bindSaveForm('#sport-form', 'sports.save', async () => {
     await loadSportsAdmin();
     await loadPublicHome();
@@ -437,12 +303,12 @@ function bindForms() {
     syncStudentPhotoPreview(file ? await fileToDataUrl(file) : $('#student-photo-url').value);
   });
   $('#student-photo-url').addEventListener('input', event => syncStudentPhotoPreview(event.target.value));
-  bindSaveForm('#tournament-form', 'tournaments.save', async () => {
-    await loadMatchesAdmin();
-    await loadPublicHome();
-  });
-  bindSaveForm('#tournament-sport-setting-form', 'tournaments.sportSetting', async () => {
+  bindSaveForm('#tournament-form', 'tournaments.save', onTournamentSaved);
+  bindSaveForm('#tournament-sport-setting-form', 'tournaments.sportSetting', async saved => {
     await loadTournamentWorkspace(app.workflow.tournamentId, false);
+    if (Number(saved?.migrated_matches || 0) > 0) {
+      toast(`เปลี่ยนชุดกติกาแล้ว · อัปเดตแมตช์ที่ยังไม่เริ่ม ${saved.migrated_matches} แมตช์`);
+    }
   });
   bindSaveForm('#team-form', 'teams.save', async () => {
     await loadTeamsAdmin();
@@ -458,29 +324,22 @@ function bindForms() {
     await loadMatchesAdmin();
     await loadPublicHome();
   });
-  bindSaveForm('#user-form', 'users.save', loadUsersAdmin);
-  $('#invite-form').addEventListener('submit', async event => {
+  $('#assignment-match').addEventListener('change', loadMatchAssignments);
+  $('#match-assignment-form').addEventListener('submit', async event => {
     event.preventDefault();
     const form = event.currentTarget;
     await runForm(form, async () => {
-      const invite = await request('invites.create', formData(form));
-      renderInviteLink(invite.invite_url);
-      form.reset();
-      await loadUsersAdmin();
-      toast('สร้างลิงก์คำเชิญแล้ว');
+      const matchId = $('#assignment-match').value;
+      const userId = $('#assignment-user').value;
+      const teamId = $('#assignment-team').value;
+      const assignments = app.matchAssignments.filter(row => String(row.user_id) !== String(userId))
+        .map(row => ({ user_id: row.user_id, team_id: row.team_id || '' }));
+      assignments.push({ user_id: userId, team_id: teamId });
+      await request('matches.assignOfficials', { match_id: matchId, assignments });
+      await loadMatchAssignments();
+      toast('มอบหมายผู้รับผิดชอบแล้ว');
     });
   });
-  $('#staff-invites-enabled').addEventListener('change', async event => {
-    const enabled = event.currentTarget.checked;
-    try {
-      await request('invites.toggle', { enabled });
-      toast(enabled ? 'เปิดใช้ลิงก์คำเชิญแล้ว' : 'ปิดใช้ลิงก์คำเชิญแล้ว');
-    } catch (error) {
-      event.currentTarget.checked = !enabled;
-      toast(error.message || 'บันทึกไม่สำเร็จ', true);
-    }
-  });
-  $('#audit-search').addEventListener('input', debounce(loadAuditLogs, 200));
   $('#accept-invite-form').addEventListener('submit', async event => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -488,62 +347,16 @@ function bindForms() {
       const result = await request('invites.accept', formData(form));
       app.user = result.user;
       app.csrf = result.csrf;
+      clearPresentationRole();
       updateSessionUi();
       window.history.replaceState({}, document.title, window.location.pathname);
       await loadAdminRefs();
-      showView(app.user?.role === 'result_officer' ? 'official' : 'dashboard');
+      showView(defaultAdminView(activeRole()));
       toast('ตั้งค่าบัญชีและเข้าสู่ระบบแล้ว');
     });
   });
 
-  $('#result-form').addEventListener('submit', async event => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    await runForm(form, async () => {
-    const data = formData(form);
-    await request('matches.result', data);
-    finishEditor(form);
-    if (app.currentView === 'official') await loadOfficialCenter(true);
-    else await loadMatchesAdmin();
-    if (app.matchCenter && String(app.matchCenter.match.id) === String(data.match_id)) await loadMatchCenter(String(data.match_id));
-    await loadPublicHome();
-    toast('บันทึกผลการแข่งขันแล้ว');
-    });
-  });
-
-  $('#news-form').addEventListener('submit', async event => {
-    event.preventDefault();
-    const form = event.currentTarget;
-    await runForm(form, async () => {
-    const file = $('#news-file').files[0];
-    if (file) {
-      const dataUrl = await fileToDataUrl(file);
-      const upload = await request('news.upload', { data_url: dataUrl, file_name: file.name });
-      $('#news-cover-url').value = upload.url;
-      updateNewsCoverPreview(upload.url);
-    }
-    await request('news.save', formData(form));
-    finishEditor(form);
-    await loadNewsAdmin();
-    await loadPublicHome();
-    toast('บันทึกข่าวแล้ว');
-    });
-  });
-  $('#news-template-select').addEventListener('change', event => {
-    const templates = {
-      announcement: ['ประกาศประชาสัมพันธ์', 'แจ้งรายละเอียดกิจกรรมและช่องทางติดตามการแข่งขัน', 'รายละเอียดกิจกรรม:\nวันและเวลา:\nสถานที่:\nข้อมูลเพิ่มเติม:'],
-      preview: ['เตรียมพบกับการแข่งขัน', 'เชิญติดตามรายการแข่งขันที่กำลังจะเริ่ม', 'รายการแข่งขัน:\nคู่แข่งขัน:\nวันและเวลา:\nสถานที่:\nช่องทางติดตามผล:'],
-      result: ['สรุปผลการแข่งขัน', 'ผลการแข่งขันล่าสุดและผลงานของผู้เข้าร่วม', 'รายการแข่งขัน:\nคู่แข่งขัน:\nผลการแข่งขัน:\nผู้ทำผลงานโดดเด่น:\nการแข่งขันนัดถัดไป:'],
-      honor: ['ขอแสดงความยินดีกับผู้ได้รับรางวัล', 'เชิดชูผลงานและความสำเร็จในการแข่งขัน', 'ผู้ได้รับรางวัล:\nประเภทรางวัล:\nรายการแข่งขัน:\nผลงานและความประทับใจ:'],
-    };
-    const selected = templates[event.currentTarget.value];
-    if (!selected) return;
-    const form = $('#news-form');
-    form.elements.title.value = selected[0];
-    form.elements.excerpt.value = selected[1];
-    form.elements.body.value = selected[2];
-    form.elements.news_type.value = event.currentTarget.value === 'honor' ? 'hall_of_fame' : 'general';
-  });
+  bindNewsEditor();
 
   bindTaskButton('#students-csv-check', async () => {
     const rows = scopedStudentImportRows();
@@ -573,55 +386,8 @@ function bindForms() {
     const result = await request('ai.dashboard');
     renderAiOutput('#dashboard-ai-output', result);
   });
-  bindTaskButton('#news-ai-button', async () => {
-    const result = await request('ai.news', {
-      sport_id: $('#news-ai-sport').value,
-      tournament_id: $('#news-ai-tournament').value,
-      match_id: $('#news-ai-match').value,
-      story_type: $('#news-ai-story-type').value,
-      tone: $('#news-ai-tone').value,
-      instruction: $('#news-ai-instruction').value,
-    });
-    const form = $('#news-form');
-    form.elements.title.value = result.title || '';
-    form.elements.excerpt.value = result.excerpt || '';
-    form.elements.body.value = result.body || '';
-    form.elements.status.value = 'draft';
-    $('#news-ai-status').textContent = result.provider === 'google-gemini' ? `Gemini: ${result.model}` : 'ร่างอัตโนมัติในระบบ';
-    syncBannerFromNews({
-      sport: result.sport_name,
-      headline: result.banner_title || result.title,
-      subtitle: result.banner_subtitle || result.tournament_name || result.excerpt,
-    });
-    toast(`ร่างข่าวใส่ฟอร์มแล้ว (${result.model || 'local-summary'})`);
-  });
-  $('#news-ai-sport').addEventListener('change', () => syncNewsAiOptions('sport'));
-  $('#news-ai-tournament').addEventListener('change', () => syncNewsAiOptions('tournament'));
-  $('#news-file').addEventListener('change', async event => {
-    const file = event.target.files[0];
-    if (file) updateNewsCoverPreview(await fileToDataUrl(file));
-  });
-  $('#news-cover-url').addEventListener('input', event => updateNewsCoverPreview(event.target.value));
-  $('#report-summary-button').addEventListener('click', async event => {
-    const button = event.currentTarget;
-    await runTask(button, async () => {
-      syncReportAiFields();
-      const result = await request('reports.summarize', collectReportPayload());
-      applyReportAiDraft(result);
-    });
-  });
-  $('#report-create-button').addEventListener('click', () => openReportBuilder());
-  $('#report-back-button').addEventListener('click', closeReportBuilder);
-  $('#report-next-step').addEventListener('click', nextReportStep);
-  $('#report-prev-step').addEventListener('click', () => setReportStep(Math.max(1, app.reportStep - 1)));
-  $('#report-save-draft').addEventListener('click', () => saveReportEditor('draft', false));
-  $('#report-add-kpi').addEventListener('click', () => addKpiRow());
-  $$('.budget-fields input[type="number"]').forEach(input => input.addEventListener('input', updateBudgetCalculation));
-  $('#report-tournament-select').addEventListener('change', syncReportSourceLabel);
-  ['report-search', 'report-year-filter', 'report-category-filter', 'report-template-filter', 'report-status-filter'].forEach(id => {
-    document.getElementById(id).addEventListener(id === 'report-search' ? 'input' : 'change', debounce(loadReportsAdmin, 180));
-  });
-
+  bindNewsAi();
+  bindNewsCoverInputs();
   $('#home-tournament-filter').addEventListener('change', event => filterPublicHome(event.target.value));
   $('#schedule-tournament-filter').addEventListener('change', event => loadPublicSchedule(event.target.value));
   $('#results-tournament-filter').addEventListener('change', event => loadPublicResults(event.target.value));
@@ -631,7 +397,7 @@ function bindForms() {
     loadPublicBracket(event.target.value, '');
   });
   $('#bracket-sport-filter').addEventListener('change', event => loadPublicBracket($('#bracket-tournament-filter').value, event.target.value));
-  $('#news-tournament-filter').addEventListener('change', () => renderPublicNewsPage().catch(error => toast(error.message || 'โหลดข่าวไม่สำเร็จ', true)));
+  bindPublicNewsFilters();
   $('#athlete-faculty-filter').addEventListener('change', () => {
     $('#athlete-department-filter').value = '';
     $('#athlete-sport-filter').value = '';
@@ -647,20 +413,11 @@ function bindForms() {
   $('#athlete-sport-filter').addEventListener('change', renderAthleteBoards);
   $('#athlete-team-filter').addEventListener('input', renderAthleteBoards);
   $('#match-tournament-select').addEventListener('change', syncMatchTeamOptions);
-  $('#result-match-select').addEventListener('change', syncResultWinnerOptions);
   $('#team-form [name="tournament_id"]').addEventListener('change', syncTeamSportOptions);
   $('#organization-type').addEventListener('change', syncOrganizationFields);
-  $('#match-center-select').addEventListener('change', event => loadMatchCenter(event.target.value));
   $('#standings-tournament-filter').addEventListener('change', event => loadStandings(event.target.value));
-  $('#event-team').addEventListener('change', syncEventStudents);
-  $('#event-type').addEventListener('change', syncEventPoints);
-  $('#clock-start').addEventListener('click', () => controlMatchClock('start'));
-  $('#clock-pause').addEventListener('click', () => controlMatchClock('pause'));
-  $('#clock-next').addEventListener('click', () => controlMatchClock('next_period'));
-  $('#clock-overtime').addEventListener('click', () => controlMatchClock('overtime'));
-  $('#match-finish').addEventListener('click', finishMatchFromCenter);
-  $('#match-event-form').addEventListener('submit', saveMatchEventFromForm);
   $('#official-refresh').addEventListener('click', () => loadOfficialCenter(true));
+  $('#official-back-button').addEventListener('click', () => showView(app.allowedViews.includes('dashboard') ? 'dashboard' : 'official'));
   $('#tournament-sport-type').addEventListener('change', syncTournamentSportOptions);
   $('#tournament-sports-toggle').addEventListener('click', () => {
     const options = $('#tournament-sports-options');
@@ -752,10 +509,10 @@ function bindSaveForm(selector, action, afterSave) {
       if (selector === '#tournament-form' && (!Array.isArray(data.sport_ids) || !data.sport_ids.length)) {
         throw new Error('กรุณาเลือกกีฬาอย่างน้อย 1 รายการ');
       }
-      await request(action, data);
+      const saved = await request(action, data);
       finishEditor(form);
-      await afterSave();
-      toast('บันทึกข้อมูลแล้ว');
+      await afterSave(saved);
+      if (selector !== '#tournament-sport-setting-form' || Number(saved?.migrated_matches || 0) === 0) toast('บันทึกข้อมูลแล้ว');
     });
   });
 }
@@ -787,36 +544,37 @@ async function request(action, payload = {}, options = {}) {
 
 function updateSessionUi() {
   const loggedIn = app.user && app.user.role && app.user.role !== 'guest';
+  const role = activeRole();
+  const roleOption = rolePresentation(role);
   $('#current-user-label').textContent = loggedIn ? (app.user.name || app.user.email) : 'ผู้เยี่ยมชม';
+  $('#current-user-label').title = loggedIn ? `สิทธิ์บัญชีจริง: ${rolePresentation(actualRole())?.label || actualRole()}` : '';
   $('#login-toggle').hidden = loggedIn;
   $('#profile-toggle').hidden = !loggedIn;
   $('#logout-button').hidden = !loggedIn;
-  const canRecordResults = ['super_admin', 'admin', 'result_officer'].includes(app.user?.role);
+  $('#role-switch-button').hidden = actualRole() !== 'super_admin';
+  const canRecordResults = ['super_admin', 'admin', 'result_officer', 'sport_head'].includes(role);
   $$('.result-only').forEach(element => element.hidden = !canRecordResults);
-  $$('.tournament-only').forEach(element => element.hidden = !['super_admin', 'admin'].includes(app.user?.role));
-  $$('.schedule-only').forEach(element => element.hidden = !['super_admin', 'admin', 'sport_head'].includes(app.user?.role));
-  $$('.athlete-only').forEach(element => element.hidden = !['super_admin', 'admin', 'registration_officer'].includes(app.user?.role));
+  $$('.tournament-only').forEach(element => element.hidden = !['super_admin', 'admin'].includes(role));
+  $$('.schedule-only').forEach(element => element.hidden = !['super_admin', 'admin', 'sport_head'].includes(role));
+  $$('.athlete-only').forEach(element => element.hidden = !['super_admin', 'admin'].includes(role));
   ['workflow-save-departments', 'workflow-edit-sports'].forEach(id => {
     const control = document.getElementById(id);
-    if (control) control.hidden = !['super_admin', 'admin'].includes(app.user?.role);
+    if (control) control.hidden = !['super_admin', 'admin'].includes(role);
   });
-  const clockActions = $('#match-center-content .clock-bar .actions');
-  if (clockActions) clockActions.hidden = !canRecordResults;
-  const eventForm = $('#match-event-form');
-  if (eventForm) eventForm.hidden = !canRecordResults;
-
-  const roleViews = {
-    super_admin: ['dashboard', 'sports', 'students', 'matches', 'official', 'news', 'users', 'reports'],
-    admin: ['dashboard', 'sports', 'students', 'matches', 'official', 'news', 'reports'],
-    sport_head: ['dashboard', 'matches', 'reports'],
-    registration_officer: ['dashboard', 'students', 'reports'],
-    result_officer: ['official', 'reports'],
-    public_relations: ['dashboard', 'news', 'reports'],
-  };
-  app.allowedViews = roleViews[app.user?.role] || [];
+  app.allowedViews = roleOption?.views || [];
+  const previewBar = $('#role-preview-bar');
+  previewBar.hidden = !app.presentationRole;
+  document.body.classList.toggle('role-preview-active', Boolean(app.presentationRole));
+  if (app.presentationRole) {
+    $('#role-preview-label').textContent = roleOption?.label || role;
+    $('#role-switch-button span').textContent = roleOption?.label || 'สลับมุมมอง';
+  } else {
+    $('#role-switch-button span').textContent = 'สลับมุมมอง';
+  }
   syncNavigationMode();
   updateShortcuts();
-  refreshIcons($('.session-box'));
+  refreshIcons($('.topbar'));
+  refreshIcons(previewBar);
 }
 
 function syncNavigationMode() {
@@ -830,8 +588,9 @@ function syncNavigationMode() {
 
   const switchButton = $('#frontend-view-button');
   switchButton.hidden = !loggedIn;
-  switchButton.dataset.viewButton = publicView ? 'dashboard' : 'public';
-  switchButton.href = publicView ? '?view=dashboard' : './';
+  const adminTarget = defaultAdminView(activeRole());
+  switchButton.dataset.viewButton = publicView ? adminTarget : 'public';
+  switchButton.href = publicView ? `?view=${adminTarget}` : './';
   switchButton.title = publicView ? 'กลับหลังบ้าน' : 'ดูหน้าเว็บไซต์';
   switchButton.setAttribute('aria-label', switchButton.title);
   switchButton.innerHTML = `${icon(publicView ? 'layout-dashboard' : 'monitor')}<span>${switchButton.title}</span>`;
@@ -847,26 +606,54 @@ function openProfileDialog() {
   refreshIcons($('#profile-dialog'));
 }
 
-async function showView(name) {
-  const adminViews = ['dashboard', 'sports', 'students', 'teams', 'matches', 'official', 'news', 'users', 'reports'];
+function syncViewRoute(name, historyMode = 'replace') {
+  if (historyMode === 'none' || name === 'invite-accept') return;
+  const url = new URL(window.location.href);
+  url.searchParams.delete('invite');
+  if (name === 'public') url.searchParams.delete('view');
+  else url.searchParams.set('view', name);
+  if (name !== 'public-news-detail' && !isNewsEditorView(name)) url.searchParams.delete('id');
+  if (name !== 'matches') ['tournament', 'section', 'create'].forEach(key => url.searchParams.delete(key));
+
+  const state = { ...(window.history.state || {}), view: name };
+  const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+  const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (historyMode === 'push' && nextUrl !== currentUrl) {
+    window.history.pushState(state, '', url);
+  } else {
+    window.history.replaceState(state, '', url);
+  }
+}
+
+async function showView(name, options = {}) {
+  if (!await guardNewsNavigation(name, options)) return;
+  const newsWorkspace = isNewsEditorView(name);
+  if (name === 'matches' && options.history === 'none') readTournamentRoute();
+  const adminViews = ['dashboard', 'sports', 'students', 'teams', 'matches', 'official', 'news', 'users'];
+  const requestedView = name;
+  const permissionView = newsWorkspace ? 'news' : requestedView;
+  let navigationView = newsWorkspace ? 'news' : name;
   // The athlete table lives inside the tournament workflow (step 5). Keep the
-  // legacy students route useful by opening that workflow step instead of the
+  // legacy students route useful by opening the athlete management section instead of the
   // now-empty shell view left behind after the sections are re-parented.
   if (name === 'students' && $('#students-table')?.closest('#view-matches')) {
     name = 'matches';
+    navigationView = 'students';
     app.workflow.step = 5;
+    tournamentUi.page = 'manage';
+    tournamentUi.section = 'athletes';
   }
-  if (adminViews.includes(name) && (!app.user || app.user.role === 'guest')) {
+  if (adminViews.includes(permissionView) && (!app.user || app.user.role === 'guest')) {
     $('#login-dialog').showModal();
     return;
   }
-  if (adminViews.includes(name) && !app.allowedViews.includes(name) && !['teams', 'students'].includes(name)) {
+  if (adminViews.includes(permissionView) && !app.allowedViews.includes(permissionView) && !['teams'].includes(permissionView)) {
     toast('ไม่มีสิทธิ์ใช้งานส่วนนี้', true);
     return;
   }
   if (name !== 'official') mountOfficialMatchCenter(false);
-  $$('.tab').forEach(button => button.classList.toggle('active', button.dataset.viewButton === name));
-  const activePublicTab = document.querySelector(`body:not(.admin-mode) .tabs .tab[data-view-button="${name}"]`);
+  $$('.tab').forEach(button => button.classList.toggle('active', button.dataset.viewButton === navigationView));
+  const activePublicTab = document.querySelector(`body:not(.admin-mode) .tabs .tab[data-view-button="${navigationView}"]`);
   if (activePublicTab && innerWidth <= 600) {
     const navigation = activePublicTab.parentElement;
     navigation.scrollTo({ left: activePublicTab.offsetLeft - (navigation.clientWidth - activePublicTab.offsetWidth) / 2, behavior: 'smooth' });
@@ -877,9 +664,10 @@ async function showView(name) {
     target.hidden = false;
   }
   app.currentView = name;
+  syncViewRoute(newsWorkspace ? name : navigationView, options.history || 'replace');
   if (name !== 'public-news-detail') document.title = baseDocumentTitle;
   $('#view-public-home-extra').hidden = name !== 'public';
-  updateWorkspaceView(name);
+  updateWorkspaceView(newsWorkspace ? 'news' : name);
   syncNavigationMode();
   window.scrollTo({ top: 0, behavior: 'instant' });
 
@@ -900,13 +688,25 @@ async function showView(name) {
     if (name === 'matches') {
       await loadMatchesAdmin();
       await loadTeamsAdmin();
-      if (['super_admin', 'admin', 'registration_officer'].includes(app.user?.role)) await loadStudentsAdmin();
+      if (['super_admin', 'admin', 'sport_head'].includes(activeRole())) await loadStudentsAdmin();
       else renderTable('#students-table', [['notice', 'ข้อมูล', () => 'สิทธิ์ของคุณดูแลขั้นตอนอื่นในทัวร์นาเมนต์']], [{ notice: '' }]);
+      renderTournamentPage();
+      syncTournamentRoute('replace');
     }
     if (name === 'official') await loadOfficialCenter();
     if (name === 'news') await loadNewsAdmin();
+    if (newsWorkspace) {
+      const ready = await loadNewsEditor(options);
+      if (ready === null) return;
+      if (!ready) {
+        $('.view').forEach(view => view.hidden = true);
+        $('#view-news-editor').hidden = false;
+        app.currentView = 'news-editor';
+        syncViewRoute('news-editor', 'replace');
+      } else if (name === 'news-preview') await showNewsPreview();
+      else if (name === 'news-banner') renderBanner();
+    }
     if (name === 'users') await loadUsersAdmin();
-    if (name === 'reports') await loadReportOptions();
     if (name === 'invite-accept') return;
     refreshIcons();
   } catch (error) {
@@ -1090,6 +890,7 @@ function renderPublicMatchList(selector, rows, completed) {
 }
 
 function renderCompletedMatch(row) {
+  if (row.race_entries?.length) return renderRaceResultCard(row);
   const date = formatUpcomingMatchDate(row.confirmed_at || row.scheduled_at);
   const sportAsset = row.sport_logo_url || sportIconAsset(row.sport_icon, row.sport_name);
   const firstScore = Number(row.team1_score ?? 0);
@@ -1117,6 +918,7 @@ function renderCompletedMatch(row) {
 }
 
 function renderUpcomingMatch(row) {
+  if (!row.team1_id && !row.team2_id) return renderRaceScheduleCard(row);
   const date = formatUpcomingMatchDate(row.scheduled_at);
   const sportAsset = row.sport_logo_url || sportIconAsset(row.sport_icon, row.sport_name);
   return `<article class="public-match-row is-upcoming">
@@ -1498,33 +1300,6 @@ function formatBracketDate(value) {
   return new Intl.DateTimeFormat('th-TH', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
 }
 
-async function renderPublicNewsPage() {
-  const tournamentId = $('#news-tournament-filter')?.value || '';
-  const rows = await request('public.news', { tournament_id: tournamentId });
-  renderNewsCards('#public-news-page', rows);
-}
-
-async function renderPublicNewsDetail() {
-  const id = new URLSearchParams(window.location.search).get('id') || '';
-  const target = $('#public-news-detail');
-  target.innerHTML = '<div class="article-loading">กำลังโหลดข่าว...</div>';
-  if (!id) {
-    renderArticleNotFound(target);
-    return;
-  }
-  const [selected, rows] = await Promise.all([
-    request('public.news', { id }),
-    request('public.news'),
-  ]);
-  const row = selected[0];
-  if (!row) {
-    renderArticleNotFound(target);
-    return;
-  }
-  document.title = `${row.title || 'ข่าวสาร'} · ${baseDocumentTitle}`;
-  renderArticlePage(target, row, rows);
-}
-
 async function loadAdminRefs() {
   const requests = [
     request('sports.list', {}, { silent: true }).then(rows => app.sports = rows).catch(() => {}),
@@ -1544,8 +1319,6 @@ function syncAdminOptions() {
   $$('.department-select').forEach(select => setOptions(select, app.departments, row => row.code, row => `${row.code} · ${row.name}`, select.classList.contains('optional') ? 'ไม่ระบุ' : 'เลือกสาขา'));
   setOptions($('#member-team-select'), app.teams, row => row.id, row => `${row.name} · ${row.tournament_name || '-'}`, 'เลือกทีม');
   setOptions($('#match-tournament-select'), app.tournaments, row => row.id, row => `${row.name} (${row.sport_name || '-'})`, 'เลือกรายการแข่ง');
-  setOptions($('#result-match-select'), app.matches, row => row.id, row => row.display_label, 'เลือกแมตช์');
-  setOptions($('#match-center-select'), app.matches, row => row.id, row => row.display_label, 'เลือกแมตช์');
   setOptions($('#standings-tournament-filter'), app.tournaments, row => row.id, row => row.name, 'เลือกรายการแข่งขัน');
   setOptions($('#news-team-link'), app.teams, row => row.id, row => `${row.name} (${row.sport_name || '-'})`, 'ไม่ระบุทีม');
   setOptions($('#news-match-link'), app.matches, row => row.id, row => row.display_label, 'ไม่ระบุแมตช์');
@@ -1554,7 +1327,6 @@ function syncAdminOptions() {
   }
   syncMatchTeamOptions();
   syncTeamSportOptions();
-  syncResultWinnerOptions();
   syncStudentScope();
 }
 
@@ -1594,24 +1366,64 @@ function syncMatchTeamOptions() {
   setOptions($('#match-team2-select'), rows, row => row.id, row => row.name, 'ไม่ระบุ');
 }
 
-function syncResultWinnerOptions() {
-  const match = app.matches.find(row => String(row.id) === String($('#result-match-select').value));
-  const rule = match ? app.sportRules.find(row => String(row.id) === String(match.rule_version_id)) : null;
-  const rows = match ? [
-    { id: match.team1_id, name: match.team1_name },
-    { id: match.team2_id, name: match.team2_name },
-  ].filter(row => row.id) : [];
-  setOptions($('#result-winner-select'), rows, row => row.id, row => row.name, 'ไม่ระบุ / เสมอ');
-  const mode = rule?.scoring_mode || 'points';
-  const unit = ({ points: 'คะแนน', sets: 'จำนวนเซต/เกมที่ชนะ', time: 'เวลา (วินาที)', rank: 'อันดับ' })[mode] || 'ผล';
-  $('#result-side1-label').textContent = `${unit} ${match?.team1_name || 'ฝั่งที่ 1'}`;
-  $('#result-side2-label').textContent = `${unit} ${match?.team2_name || 'ฝั่งที่ 2'}`;
-  $('#result-mode-help').textContent = ({
-    points: 'ตรวจสอบคะแนนรวมจากเหตุการณ์ แล้วจึงยืนยันผลการแข่งขัน',
-    sets: 'กรอกจำนวนเซตหรือเกมที่แต่ละฝั่งชนะ ระบบจะตัดสินผู้ชนะจากจำนวนที่มากกว่า',
-    time: 'กรอกเวลาเป็นวินาที ระบบใช้ค่าที่ต่ำกว่าหรือสูงกว่าตามชุดกติกา',
-    rank: 'กรอกอันดับของแต่ละฝั่ง โดยอันดับ 1 เป็นอันดับสูงสุด',
-  })[mode] || 'กรอกผลตามชุดกติกาของกีฬาที่เลือก';
+function syncScoringConfigFields(applyDefaults = false) {
+  const type = $('#scoring-type')?.value || 'SCORE';
+  syncLegacyModeOptions($('#scoring-type'));
+  $$('[data-config-for]').forEach(field => {
+    field.hidden = !field.dataset.configFor.split(/\s+/).includes(type);
+  });
+  if (applyDefaults) {
+    const form = $('#sport-rule-form');
+    form.elements.include_in_standings.checked = ['SCORE', 'ROUND', 'PERIOD_SCORE', 'SET', 'END_SCORE', 'DECISION', 'COMBAT', 'MAP'].includes(type);
+    form.elements.scoring_mode.value = ({ SCORE: 'points', ROUND: 'points', PERIOD_SCORE: 'points', SET: 'sets', END_SCORE: 'points', TIME: 'time', RACE_POSITION: 'rank' })[type] || 'points';
+    form.elements.win_by.value = ['TIME', 'RACE_POSITION', 'STROKE', 'LOWEST'].includes(type) ? 'lowest' : type === 'SET' ? 'sets' : 'highest';
+    if (['ROUND', 'END_SCORE'].includes(type)) form.elements.target_score.value = type === 'ROUND' ? '0' : '13';
+  }
+}
+
+function syncLegacyModeOptions(select) {
+  const group = select?.querySelector('[data-legacy-modes]');
+  if (!group) return;
+  const legacy = ['PERIOD_SCORE', 'END_SCORE', 'POINT_RANKING', 'COMBAT', 'RACE_POSITION', 'STROKE', 'MAP'];
+  group.hidden = !legacy.includes(select.value);
+}
+
+function detectScoringType(match, rule) {
+  const configured = String(rule?.scoring_type || '').toUpperCase();
+  if (configured && (configured !== 'SCORE' || (rule?.created_by && rule.created_by !== 'migration'))) return configured;
+  const text = `${match?.sport_icon || ''} ${match?.sport_name || ''}`.toLocaleLowerCase('th');
+  const families = [
+    ['HEIGHT', ['กระโดดสูง', 'ค้ำถ่อ', 'high jump', 'pole vault']],
+    ['DISTANCE', ['กระโดดไกล', 'เขย่ง', 'ทุ่มน้ำหนัก', 'ขว้างจักร', 'ขว้างหอก', 'long jump', 'shot put', 'discus', 'javelin']],
+    ['POINT_RANKING', ['ยิมนาสติก', 'เชียร์ลีดดิ้ง', 'เต้น', 'gymnastic', 'cheer', 'dance']],
+    ['COMBAT', ['มวย', 'เทควันโด', 'คาราเต้', 'boxing', 'muay', 'taekwondo', 'karate']],
+    ['STROKE', ['กอล์ฟ', 'golf']],
+    ['MAP', ['esport', 'e-sport', 'อีสปอร์ต', 'กีฬาอิเล็กทรอนิกส์']],
+    ['END_SCORE', ['petanque', 'pétanque', 'เปตอง']],
+    ['PERIOD_SCORE', ['basketball', 'บาสเกตบอล', 'american football']],
+    ['SET', ['volleyball', 'badminton', 'table-tennis', 'table tennis', 'tennis', 'sepak', 'วอลเลย์บอล', 'แบดมินตัน', 'เทเบิลเทนนิส', 'ปิงปอง', 'เทนนิส', 'ตะกร้อ']],
+    ['RACE_POSITION', ['running', 'swimming', 'cycling', 'วิ่ง', 'ว่ายน้ำ', 'จักรยาน', 'ผลัด', 'race']],
+  ];
+  return families.find(([, terms]) => terms.some(term => text.includes(term)))?.[0] || configured || 'SCORE';
+}
+
+function defaultScoringConfig(type) {
+  return ({
+    SCORE: { allow_draw: true, include_in_standings: true },
+    PERIOD_SCORE: { periods: 4, allow_overtime: true, include_in_standings: true },
+    SET: { best_of: 3, points_to_win_set: 21, win_by: 2, max_points: 30, include_in_standings: true },
+    ROUND: { target_score: 0, include_in_standings: true },
+    END_SCORE: { target_score: 13, include_in_standings: true },
+    JUDGED: { aggregation: 'SUM', include_in_standings: false },
+    TARGET: { aggregation: 'SUM', include_in_standings: false },
+    COUNT: { win_by: 'HIGHEST', include_in_standings: false },
+    LOWEST: { include_in_standings: false },
+    DECISION: { include_in_standings: true },
+    COMBINED: { win_by: 'HIGHEST', include_in_standings: false },
+    POINT_RANKING: { aggregation: 'SUM', include_in_standings: false },
+    MAP: { best_of: 3, include_in_standings: true },
+    COMBAT: { include_in_standings: true },
+  })[type] || { include_in_standings: false };
 }
 
 async function loadDashboard() {
@@ -1642,6 +1454,7 @@ async function loadSportsAdmin() {
   renderTable('#sports-table', [
     ['id', 'ID'],
     ['name', 'กีฬา'],
+    ['scoring_type', 'แบบบันทึก'],
     ['type', 'ประเภท'],
     ['gender', 'เพศ'],
     ['is_active', 'เปิดใช้', value => value ? 'เปิด' : 'ปิด'],
@@ -1655,7 +1468,7 @@ async function loadSportsAdmin() {
     ['sport_name', 'กีฬา'],
     ['version_number', 'เวอร์ชัน'],
     ['name', 'ชื่อกติกา'],
-    ['format', 'รูปแบบ', (_, row) => `${row.period_count} ช่วง x ${row.period_minutes} นาที`],
+    ['format', 'รูปแบบ', (_, row) => `${row.scoring_type || 'SCORE'} · ${row.period_count} ช่วง`],
     ['overtime_enabled', 'ต่อเวลา', value => value ? 'มี' : 'ไม่มี'],
     ['is_active', 'สถานะ', value => Number(value) ? 'ชุดหลัก' : 'เก็บประวัติ'],
     ['usage_count', 'ถูกนำไปใช้', value => `${Number(value || 0)} รายการ`],
@@ -1681,9 +1494,11 @@ async function loadSportsAdmin() {
 function fillSportRule(row) {
   fillForm('#sport-rule-form', {
     ...row,
+    scoring_config: row.scoring_config_text || '',
     event_types_text: (row.event_types_data || []).map(item => `${item.code}|${item.label}|${item.points || 0}|${item.participant || 'optional'}`).join('\n'),
     custom_rules: row.custom_rules_text || '',
   });
+  syncScoringConfigFields();
 }
 
 function cloneSportRule(row) {
@@ -1797,10 +1612,10 @@ function renderScopedStudents() {
       ? '<span class="status-badge success">อยู่ในทีมแล้ว</span>'
       : '<span class="status-badge">รอจัดทีม</span>', { html: true }],
     ['phone', 'โทรศัพท์'],
-    ['actions', 'จัดการ', (_, row) => rowActions([
+    ['actions', 'จัดการ', (_, row) => ['super_admin', 'admin'].includes(activeRole()) ? rowActions([
       ['แก้ไข', () => fillForm('#student-form', row)],
       ['ลบ', () => deleteRow('students.delete', row.id, loadStudentsAdmin), 'danger'],
-    ])],
+    ]) : '-'],
   ], rows);
 }
 
@@ -1867,102 +1682,22 @@ async function setTeamStatus(id, status) {
   toast('เปลี่ยนสถานะทีมแล้ว');
 }
 
-async function loadMatchesAdmin() {
-  await loadAdminRefs();
-  const [tournaments, rules] = await Promise.all([
-    request('tournaments.list'),
-    request('sportRules.list', { sport_id: '' }),
-  ]);
-  app.tournaments = tournaments;
-  app.sportRules = rules;
-  const validSelection = app.tournaments.some(row => String(row.id) === String(app.workflow.tournamentId));
-  app.workflow.tournamentId = validSelection ? String(app.workflow.tournamentId) : String(app.tournaments[0]?.id || '');
-  app.matches = await request('matches.list', { tournament_id: app.workflow.tournamentId });
-  renderTable('#tournaments-table', [
-    ['id', 'ID'],
-    ['name', 'รายการ'],
-    ['logo_url', 'โลโก้', value => value ? 'มี' : '-'],
-    ['sport_name', 'กีฬา'],
-    ['academic_year', 'ปี'],
-    ['format', 'รูปแบบ'],
-    ['status', 'สถานะ', value => workspace.labels[value] || value],
-    ['actions', 'จัดการ', (_, row) => rowActions([
-      ['แก้ไข', () => fillForm('#tournament-form', row)],
-      ['ลบ', () => deleteRow('tournaments.delete', row.id, loadMatchesAdmin), 'danger'],
-    ])],
-  ], app.tournaments);
-  renderTable('#sport-rules-table', [
-    ['sport_name', 'กีฬา'],
-    ['version_number', 'เวอร์ชัน'],
-    ['name', 'ชื่อกติกา'],
-    ['format', 'รูปแบบ', (_, row) => `${row.period_count} ช่วง x ${row.period_minutes} นาที`],
-    ['is_active', 'สถานะ', value => Number(value) ? 'ชุดหลัก' : 'เก็บประวัติ'],
-    ['usage_count', 'ถูกนำไปใช้', value => `${Number(value || 0)} รายการ`],
-    ['actions', 'จัดการ', (_, row) => rowActions([
-      ...(!row.is_referenced ? [['แก้ไข', () => fillSportRule(row)]] : []),
-      ['สร้างเวอร์ชันใหม่', () => cloneSportRule(row)],
-    ])],
-  ], app.sportRules);
-  renderTable('#matches-table', [
-    ['match_code', 'รหัส'],
-    ['tournament_name', 'รายการ'],
-    ['sport_name', 'กีฬา'],
-    ['teams', 'คู่แข่ง', (_, row) => `${row.team1_name} พบ ${row.team2_name}`],
-    ['scheduled_at', 'เวลา'],
-    ['score_label', 'คะแนน'],
-    ['status_label', 'สถานะ'],
-    ['actions', 'จัดการ', (_, row) => rowActions([
-      ...(['super_admin', 'admin', 'sport_head'].includes(app.user?.role)
-        ? [['แก้ไข', () => fillForm('#match-form', row)]] : []),
-      ['ศูนย์แข่งขัน', () => openMatchCenter(row.id)],
-      ...(['super_admin', 'admin', 'result_officer'].includes(app.user?.role)
-        ? [['บันทึกผล', () => {
-          openEditor('result-form', { match_id: row.id, team1_score: row.team1_score, team2_score: row.team2_score });
-          syncResultWinnerOptions();
-        }]] : []),
-      ...(['super_admin', 'admin', 'sport_head'].includes(app.user?.role)
-        ? [['ลบ', () => deleteRow('matches.delete', row.id, loadMatchesAdmin), 'danger']] : []),
-    ])],
-  ], app.matches);
-  syncAdminOptions();
-  const tournamentId = app.workflow.tournamentId;
-  if (tournamentId) {
-    $('#standings-tournament-filter').value = String(tournamentId);
-    await loadStandings(String(tournamentId));
-    await loadTournamentWorkspace(String(tournamentId), false);
-  } else {
-    await loadTournamentWorkspace('', false);
-  }
-}
 
 async function openMatchCenter(matchId) {
-  if (app.user?.role === 'result_officer' && app.currentView !== 'official') {
-    await showView('official');
+  if (!matchId) return;
+  const match = app.matches.find(row => String(row.id) === String(matchId));
+  const rule = match ? app.sportRules.find(item => String(item.id) === String(match.rule_version_id)) : null;
+  const dedicatedUrl = match ? dedicatedRecordingPageUrl(match, rule) : '';
+  if (dedicatedUrl) {
+    window.location.assign(dedicatedUrl);
+    return;
   }
-  $('#match-center-select').value = String(matchId);
-  await loadMatchCenter(String(matchId));
-  if (app.currentView === 'matches') setWorkflowStep(10, false);
-  if (app.currentView === 'official') renderOfficialMatchLists(String(matchId));
-  $('#match-center-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const scoringType = detectScoringType(match, rule);
+  toast(`หน้าบันทึก ${scoringType} ยังอยู่ระหว่างจัดทำ ระบบเดิมถูกยกเลิกแล้ว`, true);
 }
 
 function mountOfficialMatchCenter(active) {
-  const panel = $('#match-center-panel');
-  const host = $('#official-center-host');
-  if (!panel || !host) return;
-  if (!app.matchCenterOrigin) {
-    app.matchCenterOrigin = { parent: panel.parentNode, next: panel.nextSibling };
-  }
-  if (active) {
-    host.replaceChildren(panel);
-    panel.classList.add('official-mode');
-    document.body.classList.add('official-console-active');
-    return;
-  }
-  panel.classList.remove('official-mode');
-  document.body.classList.remove('official-console-active');
-  const { parent, next } = app.matchCenterOrigin;
-  if (parent && panel.parentNode !== parent) parent.insertBefore(panel, next && next.parentNode === parent ? next : null);
+  document.body.classList.toggle('official-console-active', Boolean(active));
 }
 
 async function loadOfficialCenter(force = false) {
@@ -1971,21 +1706,7 @@ async function loadOfficialCenter(force = false) {
   if (!app.sportRules.length) {
     app.sportRules = await request('sportRules.list', { sport_id: '' }, { silent: true }).catch(() => []);
   }
-  const selectable = app.matches.filter(row => !['cancelled', 'postponed'].includes(String(row.status)) && row.team1_id && row.team2_id);
-  const currentId = String(app.matchCenter?.match?.id || $('#match-center-select').value || '');
-  const selected = selectable.find(row => String(row.id) === currentId)
-    || selectable.find(row => row.status === 'live')
-    || selectable.find(row => row.status === 'scheduled')
-    || selectable.find(row => row.status === 'completed');
-  renderOfficialMatchLists(String(selected?.id || ''));
-  if (selected) {
-    $('#match-center-select').value = String(selected.id);
-    await loadMatchCenter(String(selected.id));
-  } else {
-    $('#match-center-empty').hidden = false;
-    $('#match-center-content').hidden = true;
-    renderOfficialEventFeed([]);
-  }
+  renderOfficialMatchLists('');
 }
 
 function renderOfficialMatchLists(selectedId = '') {
@@ -1996,206 +1717,49 @@ function renderOfficialMatchLists(selectedId = '') {
   };
   Object.entries(groups).forEach(([selector, rows]) => {
     const host = $(selector);
-    host.innerHTML = rows.length ? rows.map(row => `
+    host.innerHTML = rows.length ? rows.map(row => {
+      const rule = app.sportRules.find(item => String(item.id) === String(row.rule_version_id));
+      const isRace = ['TIME', 'RACE_POSITION'].includes(detectScoringType(row, rule));
+      const displayParts = row.status === 'completed' && row.result_summary?.display_score
+        ? String(row.result_summary.display_score).split(/\s+-\s+/) : [];
+      const scoringType = detectScoringType(row, rule);
+      const dedicatedUrl = dedicatedRecordingPageUrl(row, rule);
+      return `
+      <div class="official-match-entry">
       <button class="official-match-item ${String(row.id) === String(selectedId) ? 'selected' : ''}" type="button" data-official-match="${escapeAttr(row.id)}">
-        <span class="official-match-state status-${matchStatusClass(row.status)}">${escapeHtml(row.status_label || workspace.labels[row.status] || row.status)}</span>
-        <strong>${escapeHtml(row.team1_name || '-')} <b>${row.team1_score ?? '-'}</b></strong>
-        <strong>${escapeHtml(row.team2_name || '-')} <b>${row.team2_score ?? '-'}</b></strong>
-        <small>${escapeHtml([row.match_code, row.venue, row.scheduled_at].filter(Boolean).join(' · '))}</small>
+        <span class="official-match-topline"><span class="official-match-state status-${matchStatusClass(row.status)}">${escapeHtml(row.status_label || workspace.labels[row.status] || row.status)}</span><b class="official-match-mode">${escapeHtml(scoringType)} · กติกา v${escapeHtml(rule?.version_number || '-')}</b></span>
+        ${row.team1_id && row.team2_id && !isRace
+          ? `<strong>${escapeHtml(row.team1_name || '-')} <b>${escapeHtml(displayParts[0] ?? row.team1_score ?? '-')}</b></strong><strong>${escapeHtml(row.team2_name || '-')} <b>${escapeHtml(displayParts[1] ?? row.team2_score ?? '-')}</b></strong>`
+          : `<strong>${escapeHtml(row.sport_name || 'การแข่งขันจับเวลา')}</strong><span>${escapeHtml(row.round_name || '')}</span>`}
+        <small>${escapeHtml([row.match_code || `Match #${row.id}`, row.round_name, row.scheduled_at, row.venue].filter(Boolean).join(' · '))}</small>
       </button>
-    `).join('') : '<p class="official-list-empty">ไม่มีรายการ</p>';
+      ${dedicatedUrl ? `<a class="official-score-page-link" href="${escapeAttr(dedicatedUrl)}">เปิดหน้าบันทึก ${escapeHtml(scoringType)} <span aria-hidden="true">→</span></a>` : ''}
+      </div>
+    `; }).join('') : '<p class="official-list-empty">ไม่มีรายการ</p>';
   });
   $$('[data-official-match]').forEach(button => button.addEventListener('click', async () => {
     const id = button.dataset.officialMatch;
-    renderOfficialMatchLists(id);
-    $('#match-center-select').value = String(id);
-    await loadMatchCenter(String(id));
+    await openMatchCenter(String(id));
   }));
 }
 
-function renderOfficialEventFeed(events = []) {
-  const active = events.filter(row => !Number(row.is_voided));
-  $('#official-event-count').textContent = `${active.length} รายการ`;
-  $('#official-event-feed').innerHTML = active.length ? active.map(row => `
-    <article class="official-event-item">
-      <time>${Math.floor(Number(row.elapsed_seconds) / 60)}:${String(Number(row.elapsed_seconds) % 60).padStart(2, '0')}</time>
-      <div><strong>${escapeHtml(eventTypeLabel(row.event_type))}</strong><span>${escapeHtml([row.team_name, row.student_name].filter(Boolean).join(' · '))}</span>${row.note ? `<small>${escapeHtml(row.note)}</small>` : ''}</div>
-      <b>${Number(row.points) ? `+${escapeHtml(row.points)}` : ''}</b>
-      <button class="icon-button" type="button" data-void-official-event="${escapeAttr(row.id)}" aria-label="ยกเลิกเหตุการณ์"><i data-lucide="undo-2"></i></button>
-    </article>
-  `).join('') : '<div class="empty-state">ยังไม่มีเหตุการณ์</div>';
-  $$('[data-void-official-event]').forEach(button => button.addEventListener('click', () => voidMatchEvent(button.dataset.voidOfficialEvent)));
-  refreshIcons($('#official-event-feed'));
+function dedicatedRecordingPageUrl(match, rule) {
+  const pageByType = { SCORE: 'score.php', SET: 'set.php' };
+  const page = pageByType[detectScoringType(match, rule)];
+  return page ? scoreRecordingPageUrl(match.id, page) : '';
 }
 
-async function loadMatchCenter(matchId) {
-  clearInterval(app.clockTimer);
-  app.clockTimer = null;
-  app.matchCenter = null;
-  $('#match-center-empty').hidden = Boolean(matchId);
-  $('#match-center-content').hidden = !matchId;
-  if (!matchId) return;
-  const data = await request('matches.center', { match_id: matchId });
-  app.matchCenter = data;
-  const match = data.match;
-  $('#center-team1').textContent = match.team1_name;
-  $('#center-team2').textContent = match.team2_name;
-  $('#center-score').textContent = `${match.team1_score || 0} - ${match.team2_score || 0}`;
-  const status = String(match.status || 'scheduled');
-  const statusNode = $('#center-status');
-  statusNode.textContent = match.status_label || workspace.labels[status] || status;
-  statusNode.className = `badge status-${matchStatusClass(status)}`;
-  const scoringLabels = { points: 'คะแนนรวม', sets: 'คะแนนแบบเซต/เกม', time: 'เวลา', rank: 'อันดับหรือสถิติ' };
-  $('#center-rule-summary').textContent = `${match.sport_name || 'กีฬา'} · ${scoringLabels[data.rule.scoring_mode] || data.rule.scoring_mode}`;
-  $('#center-period').textContent = `ช่วงที่ ${match.current_period || 1}`;
-  $('#center-roster1-title').textContent = `นักกีฬา ${match.team1_name || 'ทีม 1'}`;
-  $('#center-roster2-title').textContent = `นักกีฬา ${match.team2_name || 'ทีม 2'}`;
-  renderMatchRoster('#center-roster1', data.team1_members || []);
-  renderMatchRoster('#center-roster2', data.team2_members || []);
-  $('#match-event-form [name="match_id"]').value = match.id;
-  setOptions($('#event-type'), data.rule.event_types_data || [], row => row.code, row => row.label, 'เลือกเหตุการณ์');
-  setOptions($('#event-team'), [
-    { id: match.team1_id, name: match.team1_name },
-    { id: match.team2_id, name: match.team2_name },
-  ].filter(row => row.id), row => row.id, row => row.name, 'ไม่ระบุทีม');
-  updateCenterClock(Number(match.clock_seconds) || 0);
-  syncEventStudents();
-  syncEventPoints();
-  const isLive = status === 'live';
-  const isComplete = status === 'completed';
-  $('#clock-start').disabled = isLive || isComplete;
-  $('#clock-pause').disabled = isComplete || match.clock_status !== 'running';
-  $('#clock-next').disabled = !isLive;
-  $('#clock-overtime').disabled = !isLive || !Number(data.rule.overtime_enabled);
-  $('#match-finish').disabled = !isLive;
-  $('#match-event-form [type="submit"]').disabled = !isLive;
-  $('#event-entry-help').textContent = isComplete
-    ? 'การแข่งขันจบแล้ว เหตุการณ์ที่บันทึกไว้ใช้ตรวจสอบผลย้อนหลัง'
-    : isLive
-      ? 'เลือกเหตุการณ์ ทีม และนักกีฬาตามที่ชุดกติกากำหนด คะแนนจะรวมให้อัตโนมัติ'
-      : 'กดเริ่มการแข่งขันก่อนบันทึกคะแนนหรือเหตุการณ์';
-  renderTable('#match-events-table', [
-    ['time', 'เวลา', (_, row) => `${Math.floor(Number(row.elapsed_seconds) / 60)}:${String(Number(row.elapsed_seconds) % 60).padStart(2, '0')}`],
-    ['event_type', 'เหตุการณ์', value => eventTypeLabel(value)],
-    ['team_name', 'ทีม'], ['student_name', 'นักกีฬา'], ['points', 'แต้ม'], ['note', 'หมายเหตุ'],
-    ['actions', 'จัดการ', (_, row) => Number(row.is_voided) ? 'ยกเลิกแล้ว' : rowActions([['ยกเลิกเหตุการณ์', () => voidMatchEvent(row.id)]])],
-  ], data.events || []);
-  if (app.currentView === 'official') {
-    renderOfficialMatchLists(String(match.id));
-    renderOfficialEventFeed(data.events || []);
-  }
-  if (match.clock_status === 'running') startLocalClock();
-  refreshIcons($('#match-center-panel'));
+function scoreRecordingPageUrl(matchId, page = 'score.php') {
+  const apiUrl = new URL(app.apiUrl, window.location.href);
+  apiUrl.pathname = apiUrl.pathname.replace(/\/api\.php$/, `/public/scoring/${page}`);
+  apiUrl.search = '';
+  apiUrl.searchParams.set('match_id', String(matchId));
+  return apiUrl.toString();
 }
 
-function renderMatchRoster(selector, rows) {
-  const host = $(selector);
-  host.innerHTML = rows.length ? rows.map(row => `
-    <div class="match-roster-member">
-      <b>${escapeHtml(row.shirt_number || '-')}</b>
-      <div><span>${escapeHtml(row.full_name || '-')}</span><small>${escapeHtml([row.student_code, row.department_name, row.field_position || row.role].filter(Boolean).join(' · '))}</small></div>
-    </div>
-  `).join('') : '<span class="muted">ยังไม่มีรายชื่อนักกีฬา</span>';
+function formatRaceTime(milliseconds) {
+  return (Number(milliseconds) / 1000).toFixed(3);
 }
-
-function eventTypeLabel(code) {
-  return app.matchCenter?.rule?.event_types_data?.find(row => row.code === code)?.label || code;
-}
-
-function syncEventStudents() {
-  if (!app.matchCenter) return;
-  const teamId = $('#event-team').value;
-  const match = app.matchCenter.match;
-  const rows = String(teamId) === String(match.team1_id) ? app.matchCenter.team1_members : String(teamId) === String(match.team2_id) ? app.matchCenter.team2_members : [];
-  setOptions($('#event-student'), rows || [], row => row.student_id, row => `${row.shirt_number || '-'} ${row.full_name}`, 'ไม่ระบุนักกีฬา');
-  syncEventParticipantRequirements();
-}
-
-function syncEventPoints() {
-  const definition = app.matchCenter?.rule?.event_types_data?.find(row => row.code === $('#event-type').value);
-  $('#event-points').value = definition ? Number(definition.points || 0) : 0;
-  syncEventParticipantRequirements();
-}
-
-function syncEventParticipantRequirements() {
-  const definition = app.matchCenter?.rule?.event_types_data?.find(row => row.code === $('#event-type').value);
-  const participant = definition?.participant || 'optional';
-  const requiresTeam = participant === 'athlete' || participant === 'team' || Number(definition?.points || 0) !== 0;
-  $('#event-team').required = requiresTeam;
-  $('#event-student').required = participant === 'athlete';
-  $('#event-entry-help').textContent = participant === 'athlete'
-    ? 'เหตุการณ์นี้ต้องเลือกทีมและนักกีฬา เพื่อให้ตรวจสอบผู้ทำคะแนนหรือผู้ทำฟาวล์ได้'
-    : participant === 'team'
-      ? 'เหตุการณ์นี้บันทึกในระดับทีม ไม่จำเป็นต้องเลือกนักกีฬา'
-      : 'สามารถระบุทีมหรือนักกีฬาเพิ่มเติมได้ตามเหตุการณ์จริง';
-}
-
-function updateCenterClock(seconds) {
-  if (!app.matchCenter) return;
-  app.matchCenter.match.clock_seconds = seconds;
-  $('#center-clock').textContent = `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
-}
-
-function startLocalClock() {
-  clearInterval(app.clockTimer);
-  app.clockTimer = setInterval(() => updateCenterClock(Number(app.matchCenter.match.clock_seconds || 0) + 1), 1000);
-}
-
-async function controlMatchClock(clockAction) {
-  if (!app.matchCenter) return;
-  await request('matches.clock', {
-    match_id: app.matchCenter.match.id,
-    clock_action: clockAction,
-    clock_seconds: app.matchCenter.match.clock_seconds,
-    period_number: app.matchCenter.match.current_period,
-  });
-  await loadMatchCenter(String(app.matchCenter.match.id));
-}
-
-async function finishMatchFromCenter() {
-  if (!app.matchCenter || String(app.matchCenter.match.status) !== 'live') return;
-  const matchId = String(app.matchCenter.match.id);
-  if (app.matchCenter.match.clock_status === 'running') {
-    await controlMatchClock('pause');
-  }
-  const match = app.matchCenter.match;
-  openEditor('result-form', {
-    match_id: matchId,
-    team1_score: Number(match.team1_score || 0),
-    team2_score: Number(match.team2_score || 0),
-    winner_team_id: match.winner_team_id || '',
-  });
-  syncResultWinnerOptions();
-}
-
-async function saveMatchEventFromForm(event) {
-  event.preventDefault();
-  const form = event.currentTarget;
-  await runForm(form, async () => {
-    const payload = formData(form);
-    payload.elapsed_seconds = app.matchCenter.match.clock_seconds;
-    payload.period_number = app.matchCenter.match.current_period;
-    await request('matches.event', payload);
-    form.elements.note.value = '';
-    await loadMatchCenter(payload.match_id);
-    if (app.currentView === 'official') {
-      await loadAdminRefs();
-      renderOfficialMatchLists(String(payload.match_id));
-    } else await loadMatchesAdmin();
-    toast('บันทึกเหตุการณ์แล้ว');
-  });
-}
-
-async function voidMatchEvent(id) {
-  if (!await confirmAction('ยกเลิกเหตุการณ์นี้?', 'เหตุการณ์จะยังอยู่ในประวัติ แต่ไม่นำไปคำนวณคะแนน', 'ยกเลิกเหตุการณ์', true)) return;
-  await request('matches.eventVoid', { id });
-  await loadMatchCenter(String(app.matchCenter.match.id));
-  if (app.currentView === 'official') {
-    await loadAdminRefs();
-    renderOfficialMatchLists(String(app.matchCenter.match.id));
-  } else await loadMatchesAdmin();
-}
-
 async function loadStandings(tournamentId) {
   const rows = tournamentId ? await request('standings.list', { tournament_id: tournamentId }) : [];
   renderTable('#standings-table', [
@@ -2203,132 +1767,6 @@ async function loadStandings(tournamentId) {
     ['played', 'แข่ง'], ['won', 'ชนะ'], ['drawn', 'เสมอ'], ['lost', 'แพ้'],
     ['scored', 'ได้'], ['conceded', 'เสีย'], ['score_difference', '+/-'], ['points', 'คะแนน'],
   ], rows);
-}
-
-async function loadNewsAdmin() {
-  if (!app.departments.length) await loadAdminRefs();
-  const [news, matches, aiSettings] = await Promise.all([
-    request('news.list'),
-    request('matches.forNews'),
-    request('ai.models', {}, { silent: true }).catch(() => null),
-  ]);
-  app.news = news;
-  app.newsMatches = matches;
-  app.aiSettings = aiSettings;
-  $('#news-ai-status').textContent = aiSettings?.configured ? `Gemini: ${aiSettings.default_model}` : 'AI สำรองในระบบ';
-  syncNewsAiOptions();
-  renderTable('#news-table', [
-    ['id', 'ID'],
-    ['title', 'หัวข้อ'],
-    ['news_type_label', 'ประเภท'],
-    ['status', 'สถานะ'],
-    ['is_pinned', 'ปักหมุด', value => value ? 'ใช่' : 'ไม่'],
-    ['published_at', 'เผยแพร่'],
-    ['actions', 'จัดการ', (_, row) => rowActions([
-      ['แก้ไข', () => fillForm('#news-form', row)],
-      ['เผยแพร่', () => publishNews(row.id)],
-      ['ลบ', () => deleteRow('news.delete', row.id, loadNewsAdmin), 'danger'],
-    ])],
-  ], app.news);
-}
-
-function syncNewsAiOptions(source = '') {
-  const sportSelect = $('#news-ai-sport');
-  const tournamentSelect = $('#news-ai-tournament');
-  const matchSelect = $('#news-ai-match');
-  const sports = [...new Map(app.newsMatches.filter(row => row.sport_id).map(row => [String(row.sport_id), { id: row.sport_id, name: row.sport_name }])).values()];
-  setOptions(sportSelect, sports, row => row.id, row => row.name, 'ทุกกีฬา');
-  if (source === 'sport') tournamentSelect.value = '';
-  const tournaments = [...new Map(app.newsMatches
-    .filter(row => !sportSelect.value || String(row.sport_id) === sportSelect.value)
-    .map(row => [String(row.tournament_id), { id: row.tournament_id, name: row.tournament_name }])).values()];
-  setOptions(tournamentSelect, tournaments, row => row.id, row => row.name, 'ทุกรายการ');
-  const visibleMatches = app.newsMatches.filter(row =>
-    (!sportSelect.value || String(row.sport_id) === sportSelect.value)
-    && (!tournamentSelect.value || String(row.tournament_id) === tournamentSelect.value));
-  setOptions(matchSelect, visibleMatches, row => row.id, row => row.display_label, 'เลือกแมตช์ล่าสุดอัตโนมัติ');
-}
-
-async function publishNews(id) {
-  await request('news.publish', { id });
-  await loadNewsAdmin();
-  await loadPublicHome();
-  toast('เผยแพร่ข่าวแล้ว');
-}
-
-async function loadUsersAdmin() {
-  const options = await request('users.options');
-  $('#staff-invites-enabled').checked = Boolean(options.staff_invites_enabled);
-  app.departments = options.departments || [];
-  app.sports = options.sports || app.sports;
-  setOptions($('#user-role-select'), options.roles || [], row => row.value, row => row.label, 'เลือกบทบาท');
-  setOptions($('#invite-role-select'), options.roles || [], row => row.value, row => row.label, 'เลือกบทบาท');
-  syncAdminOptions();
-  const [users, invites] = await Promise.all([
-    request('users.list'),
-    request('invites.list'),
-  ]);
-  app.users = users;
-  app.invites = invites;
-  renderTable('#users-table', [
-    ['id', 'ID'],
-    ['email', 'อีเมล'],
-    ['name', 'ชื่อ'],
-    ['role_label', 'บทบาท'],
-    ['department_name', 'สาขา'],
-    ['sport_names', 'กีฬา'],
-    ['password_status', 'รหัสผ่าน'],
-    ['active_label', 'สถานะ'],
-    ['actions', 'จัดการ', (_, row) => rowActions([
-      ['แก้ไข', () => fillForm('#user-form', row)],
-      ['ลบ', () => deleteRow('users.delete', row.id, loadUsersAdmin), 'danger'],
-    ])],
-  ], app.users);
-  renderTable('#invites-table', [
-    ['email', 'อีเมล'],
-    ['name', 'ชื่อ'],
-    ['role_label', 'บทบาท'],
-    ['status_label', 'สถานะ'],
-    ['expires_at', 'หมดอายุ'],
-    ['expires_in_minutes', 'คงเหลือ', value => Number(value) > 0 ? `${value} นาที` : '-'],
-    ['actions', 'จัดการ', (_, row) => rowActions([
-      ...(row.invite_url ? [['คัดลอก', () => copyInviteLink(row.invite_url)]] : []),
-      [row.status === 'pending' ? 'ยกเลิก' : 'ดูแล้ว', () => row.status === 'pending' ? revokeInvite(row.id) : Promise.resolve(), row.status === 'pending' ? 'danger' : ''],
-    ])],
-  ], app.invites);
-  await loadAuditLogs();
-}
-
-async function loadAuditLogs() {
-  const rows = await request('audit.list', { q: $('#audit-search').value }, { silent: true });
-  renderTable('#audit-full-table', [
-    ['created_at', 'เวลา'], ['user_email', 'ผู้ใช้'], ['action', 'การดำเนินการ'],
-    ['entity', 'ข้อมูล'], ['entity_id', 'รหัสอ้างอิง'],
-    ['detail_json', 'รายละเอียด', value => String(value || '').slice(0, 180)],
-  ], rows);
-}
-
-function renderInviteLink(url) {
-  const box = $('#invite-link-box');
-  box.hidden = false;
-  box.innerHTML = `
-    <strong>ลิงก์คำเชิญ</strong>
-    <input value="${escapeAttr(url)}" readonly>
-    <button class="btn small" type="button">คัดลอกลิงก์</button>
-    <p class="muted">ลิงก์นี้หมดอายุภายใน 45 นาที</p>
-  `;
-  $('button', box).addEventListener('click', () => copyInviteLink(url));
-}
-
-async function copyInviteLink(url) {
-  await navigator.clipboard.writeText(url);
-  toast('คัดลอกลิงก์คำเชิญแล้ว');
-}
-
-async function revokeInvite(id) {
-  await request('invites.revoke', { id });
-  await loadUsersAdmin();
-  toast('ยกเลิกคำเชิญแล้ว');
 }
 
 async function openInviteAccept(token) {
@@ -2346,634 +1784,12 @@ async function openInviteAccept(token) {
   }
 }
 
-async function loadReportOptions() {
-  app.reportOptions = await request('reports.options');
-  renderReportCategories();
-  syncReportFilters();
-  await loadReportsAdmin();
-}
-
-async function loadReportsAdmin() {
-  const filters = {
-    query: $('#report-search').value,
-    academic_year: $('#report-year-filter').value,
-    category_id: $('#report-category-filter').value,
-    template_id: $('#report-template-filter').value,
-    status: $('#report-status-filter').value,
-  };
-  app.reports = await request('reports.list', filters);
-  renderReportsDashboard();
-}
-
-function renderReportsDashboard() {
-  const rows = app.reports;
-  const totals = {
-    all: rows.length,
-    draft: rows.filter(row => row.status === 'draft').length,
-    review: rows.filter(row => row.status === 'review').length,
-    published: rows.filter(row => row.status === 'published').length,
-  };
-  $('#report-summary-strip').innerHTML =
-    '<div><span>รายงานทั้งหมด</span><strong>' + totals.all + '</strong></div>' +
-    '<div><span>แบบร่าง</span><strong>' + totals.draft + '</strong></div>' +
-    '<div><span>รอตรวจสอบ</span><strong>' + totals.review + '</strong></div>' +
-    '<div><span>เผยแพร่แล้ว</span><strong>' + totals.published + '</strong></div>';
-  const permissions = app.reportOptions?.permissions || {};
-  renderTable('#reports-table', [
-    ['title', 'ชื่อรายงาน'],
-    ['category_name', 'หมวดหมู่'],
-    ['template_name', 'ประเภทแบบฟอร์ม'],
-    ['academic_year', 'ปี / รุ่น'],
-    ['report_date_label', 'วันที่จัดทำ'],
-    ['prepared_by', 'ผู้จัดทำ'],
-    ['status_label', 'สถานะ'],
-    ['actions', 'จัดการ', (_, row) => rowActions([
-      ['ดูรายงาน', () => viewStoredReport(row.id)],
-      ...(permissions.edit ? [['แก้ไข', () => editStoredReport(row.id)]] : []),
-      ['ดาวน์โหลด PDF', () => exportStoredReport(row.id)],
-      ...(permissions.edit && row.status === 'draft' ? [['ส่งตรวจ', () => setReportStatus(row.id, 'review')]] : []),
-      ...(permissions.edit && row.status === 'review' ? [['เสร็จสมบูรณ์', () => setReportStatus(row.id, 'completed')]] : []),
-      ...(permissions.publish && row.status === 'completed' ? [['เผยแพร่', () => setReportStatus(row.id, 'published')]] : []),
-      ...(permissions.publish ? [['ลบ', () => deleteRow('reports.delete', row.id, loadReportsAdmin), 'danger']] : []),
-    ])],
-  ], rows);
-  $('#report-create-button').hidden = !permissions.edit;
-}
-
-function syncReportFilters() {
-  const options = app.reportOptions || { categories: [], templates: [], tournaments: [], settings: {} };
-  setOptions($('#report-category-filter'), options.categories, row => row.id, row => row.name, 'ทุกหมวดหมู่');
-  setOptions($('#report-template-filter'), options.templates, row => row.id, row => row.name, 'ทุกแบบฟอร์ม');
-  setOptions($('#report-tournament-select'), options.tournaments, row => row.id, row => row.name + (row.sport_name ? ' (' + row.sport_name + ')' : ''), 'ข้อมูลการแข่งขันทั้งหมด');
-  const years = [...new Set(options.tournaments.map(row => row.academic_year).filter(Boolean))];
-  setOptions($('#report-year-filter'), years.map(value => ({ value })), row => row.value, row => row.value, 'ทุกปี');
-}
-
-function renderReportCategories() {
-  const host = $('#report-category-choices');
-  const categories = app.reportOptions?.categories || [];
-  host.innerHTML = '';
-  categories.forEach(category => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'report-choice';
-    button.dataset.value = category.id;
-    button.innerHTML = '<span class="report-choice-icon">' + icon(category.icon || 'file-text') + '</span><strong>' + escapeHtml(category.name) + '</strong><small>' + escapeHtml(category.description || '') + '</small><span class="choice-check">' + icon('check') + '</span>';
-    button.addEventListener('click', () => selectReportCategory(category));
-    host.append(button);
-  });
-  refreshIcons(host);
-}
-
-function selectReportCategory(category) {
-  const form = $('#report-editor-form');
-  form.elements.category_id.value = category.id;
-  form.elements.template_id.value = '';
-  $$('.report-choice', $('#report-category-choices')).forEach(button => button.classList.toggle('selected', button.dataset.value === String(category.id)));
-  $('#report-selected-category-label').textContent = category.name;
-  renderReportTemplates(category.id);
-}
-
-function renderReportTemplates(categoryId) {
-  const host = $('#report-template-choices');
-  const templates = (app.reportOptions?.templates || []).filter(row => String(row.category_id) === String(categoryId));
-  host.innerHTML = '';
-  templates.forEach(template => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'report-choice template-choice';
-    button.dataset.value = template.id;
-    button.innerHTML = '<span class="report-choice-icon">' + icon('file-text') + '</span><strong>' + escapeHtml(template.name) + '</strong><small>' + escapeHtml(template.description || '') + '</small><span class="choice-check">' + icon('check') + '</span>';
-    button.addEventListener('click', () => selectReportTemplate(template));
-    host.append(button);
-  });
-  refreshIcons(host);
-}
-
-function selectReportTemplate(template) {
-  const form = $('#report-editor-form');
-  form.elements.template_id.value = template.id;
-  $$('.report-choice', $('#report-template-choices')).forEach(button => button.classList.toggle('selected', button.dataset.value === String(template.id)));
-  applyReportSections(template.sections || []);
-}
-
-function applyReportSections(sections) {
-  $$('[data-report-section]', $('#report-editor-form')).forEach(section => {
-    const name = section.dataset.reportSection;
-    section.hidden = !sections.includes(name) && name !== 'general';
-  });
-}
-
-function openReportBuilder(report = null) {
-  const form = $('#report-editor-form');
-  form.reset();
-  app.activeReport = report;
-  $('#report-dashboard').hidden = true;
-  $('#report-builder').hidden = false;
-  $('#report-builder-title').textContent = report ? 'ตรวจสอบและแก้ไขรายงาน' : 'สรุปผลรายงาน';
-  form.elements.report_date.value = new Date().toISOString().slice(0, 10);
-  form.elements.academic_year.value = '';
-  form.elements.prepared_by.value = app.user?.name || app.user?.email || '';
-  form.elements.status.value = 'draft';
-  $('#report-kpi-editor').innerHTML = '';
-  addKpiRow();
-  $('#report-attachments-list').innerHTML = '';
-  updateBudgetCalculation();
-  renderReportCategories();
-  if (report) {
-    fillReportEditor(report);
-    setReportStep(3);
-  } else {
-    const standardTemplate = app.reportOptions?.templates?.find(row => row.code === 'annual-overview')
-      || app.reportOptions?.templates?.find(row => row.code === 'executive-summary')
-      || app.reportOptions?.templates?.[0];
-    const standardCategory = standardTemplate
-      ? app.reportOptions?.categories?.find(row => String(row.id) === String(standardTemplate.category_id))
-      : app.reportOptions?.categories?.[0];
-    if (standardCategory) selectReportCategory(standardCategory);
-    if (standardTemplate) selectReportTemplate(standardTemplate);
-    applyReportSections(['general', 'principles', 'performance', 'sports_results', 'kpi', 'budget', 'outcomes', 'problems', 'executive', 'attachments']);
-    setReportStep(3);
-  }
-  refreshIcons($('#report-builder'));
-  window.scrollTo({ top: 0, behavior: 'smooth' });
-}
-
-function closeReportBuilder() {
-  $('#report-builder').hidden = true;
-  $('#report-dashboard').hidden = false;
-  app.activeReport = null;
-  loadReportsAdmin();
-}
-
-function fillReportEditor(report) {
-  const form = $('#report-editor-form');
-  const direct = ['id', 'category_id', 'template_id', 'status', 'title', 'academic_year', 'fiscal_year', 'semester', 'start_date', 'end_date', 'tournament_id', 'department', 'responsible_person', 'prepared_by', 'report_date', 'executive_summary'];
-  direct.forEach(key => { if (form.elements[key]) form.elements[key].value = report[key] ?? ''; });
-  const groups = [report.general || {}, report.performance || {}, report.outcomes || {}, report.problems || {}];
-  groups.forEach(group => Object.entries(group).forEach(([key, value]) => { if (form.elements[key]) form.elements[key].value = value ?? ''; }));
-  form.elements.budget_allocated.value = report.budget?.allocated ?? 0;
-  form.elements.budget_actual.value = report.budget?.actual ?? 0;
-  form.elements.budget_note.value = report.budget?.note ?? '';
-  $('#report-kpi-editor').innerHTML = '';
-  (report.kpis?.length ? report.kpis : [{}]).forEach(addKpiRow);
-  const category = app.reportOptions.categories.find(row => String(row.id) === String(report.category_id));
-  if (category) selectReportCategory(category);
-  const template = app.reportOptions.templates.find(row => String(row.id) === String(report.template_id));
-  if (template) selectReportTemplate(template);
-  updateBudgetCalculation();
-  renderReportAttachments(report.attachments || []);
-  renderReportSource(report.sports_data);
-  syncReportAiFields();
-}
-
-function setReportStep(step) {
-  app.reportStep = step;
-  $$('[data-report-step]').forEach(panel => panel.hidden = Number(panel.dataset.reportStep) !== step);
-  $$('[data-report-step-indicator]').forEach(item => {
-    const number = Number(item.dataset.reportStepIndicator);
-    item.classList.toggle('active', number === step);
-    item.classList.toggle('done', number < step);
-  });
-  $('#report-prev-step').hidden = step === 3;
-  $('#report-save-draft').hidden = step !== 3 || !app.reportOptions?.permissions?.edit;
-  $('#report-next-step').hidden = step === 4;
-  $('#report-form').hidden = step !== 3 || !app.reportOptions?.permissions?.edit;
-  refreshIcons($('#report-builder'));
-}
-
-async function nextReportStep() {
-  const form = $('#report-editor-form');
-  if (app.reportStep === 3) {
-    if (!form.reportValidity()) return;
-    const report = await saveReportEditor(form.elements.status.value || 'draft', true);
-    if (report) {
-      await renderStoredReportPreview(report);
-      setReportStep(4);
-    }
-  }
-}
-
-async function saveReportEditor(status = 'draft', quiet = false) {
-  const form = $('#report-editor-form');
-  if (!form.reportValidity()) return null;
-  form.dataset.busy = 'true';
-  form.setAttribute('aria-busy', 'true');
-  try {
-    const payload = collectReportPayload();
-    payload.status = status;
-    let report = await request('reports.save', payload);
-    form.elements.id.value = report.id;
-    form.elements.status.value = report.status;
-    await uploadPendingReportFiles(report.id);
-    report = await request('reports.get', { id: report.id });
-    app.activeReport = report;
-    renderReportAttachments(report.attachments || []);
-    renderReportSource(report.sports_data);
-    syncReportAiFields();
-    if (!quiet) toast('บันทึกรายงานแล้ว');
-    return report;
-  } catch (error) {
-    toast(error.message || 'บันทึกรายงานไม่สำเร็จ', true);
-    return null;
-  } finally {
-    delete form.dataset.busy;
-    form.removeAttribute('aria-busy');
-  }
-}
-
-function collectReportPayload() {
-  const form = $('#report-editor-form');
-  const value = name => form.elements[name]?.value ?? '';
-  return {
-    id: value('id'),
-    category_id: value('category_id'),
-    template_id: value('template_id'),
-    status: value('status') || 'draft',
-    title: value('title'),
-    academic_year: value('academic_year'),
-    fiscal_year: value('fiscal_year'),
-    semester: value('semester'),
-    start_date: value('start_date'),
-    end_date: value('end_date'),
-    tournament_id: value('tournament_id'),
-    department: value('department'),
-    responsible_person: value('responsible_person'),
-    prepared_by: value('prepared_by'),
-    report_date: value('report_date'),
-    executive_summary: value('executive_summary'),
-    general: {
-      project_name: value('project_name') || value('title'),
-      competition_name: selectedTournamentName(),
-      operation_date: value('operation_date') || value('start_date'),
-      location: value('location'),
-      rationale: value('rationale'),
-      objectives: value('objectives'),
-      target_group: value('target_group'),
-    },
-    performance: { operation_detail: value('operation_detail') },
-    outcomes: {
-      performance_result: value('performance_result'),
-      benefits: value('benefits'),
-      participant_impact: value('participant_impact'),
-    },
-    problems: {
-      obstacles: value('obstacles'),
-      solutions: value('solutions'),
-      recommendations: value('recommendations'),
-    },
-    kpis: collectKpis(),
-    budget: {
-      allocated: value('budget_allocated'),
-      actual: value('budget_actual'),
-      note: value('budget_note'),
-    },
-  };
-}
-
-function applyReportAiDraft(result) {
-  const draft = result.draft || {};
-  const form = $('#report-editor-form');
-  const set = (name, value, overwrite = true) => {
-    if (!form.elements[name]) return;
-    if (!overwrite && form.elements[name].value) return;
-    if (value === undefined || value === null || value === '') return;
-    form.elements[name].value = value;
-  };
-
-  set('title', draft.title);
-  set('executive_summary', draft.executive_summary);
-  Object.entries(draft.general || {}).forEach(([key, value]) => set(key, value));
-  Object.entries(draft.performance || {}).forEach(([key, value]) => set(key, value));
-  Object.entries(draft.outcomes || {}).forEach(([key, value]) => set(key, value));
-  Object.entries(draft.problems || {}).forEach(([key, value]) => set(key, value));
-
-  if (draft.budget) {
-    set('budget_allocated', draft.budget.allocated, false);
-    set('budget_actual', draft.budget.actual, false);
-    set('budget_note', draft.budget.note);
-    updateBudgetCalculation();
-  }
-
-  if (Array.isArray(draft.kpis) && draft.kpis.length) {
-    $('#report-kpi-editor').innerHTML = '';
-    draft.kpis.forEach(addKpiRow);
-  }
-
-  $('#report-output').innerHTML = `
-    <article class="formal-report-card compact">
-      <div class="ai-meta"><span class="badge">ข้อมูลจากระบบ</span><span>${escapeHtml(result.generated_at || '')}</span></div>
-      <h3>สรุปผลลงในแบบรายงานทางการแล้ว</h3>
-      <p>${escapeHtml(draft.executive_summary || 'ระบบรวบรวมข้อมูลตามขอบเขตที่เลือกแล้ว กรุณาตรวจทานก่อนบันทึกและส่งออก PDF')}</p>
-    </article>
-  `;
-  toast('สรุปผลรายงานจากข้อมูลระบบแล้ว');
-  refreshIcons($('#report-builder'));
-}
-
-function selectedTournamentName() {
-  const select = $('#report-tournament-select');
-  return select.value ? select.options[select.selectedIndex]?.textContent || '' : '';
-}
-
-function addKpiRow(data = {}) {
-  const row = document.createElement('div');
-  row.className = 'kpi-row';
-  row.innerHTML =
-    '<label>ตัวชี้วัด<input data-kpi="name" value="' + escapeAttr(data.name || '') + '" placeholder="ชื่อตัวชี้วัด"></label>' +
-    '<label>หน่วย<input data-kpi="unit" value="' + escapeAttr(data.unit || '') + '"></label>' +
-    '<label>เป้าหมาย<input data-kpi="target" type="number" min="0" step="0.01" value="' + escapeAttr(data.target_value ?? data.target ?? 0) + '"></label>' +
-    '<label>ผลจริง<input data-kpi="actual" type="number" min="0" step="0.01" value="' + escapeAttr(data.actual_value ?? data.actual ?? 0) + '"></label>' +
-    '<label>วิธีคำนวณ<select data-kpi="calculation_type"><option value="percentage">คำนวณร้อยละ</option><option value="manual">กำหนดเอง</option></select></label>' +
-    '<label>ความสำเร็จ (%)<input data-kpi="achievement" type="number" min="0" step="0.01" value="' + escapeAttr(data.achievement ?? 0) + '"></label>' +
-    '<button class="btn icon-button danger" type="button" title="ลบ KPI" aria-label="ลบ KPI">' + icon('trash-2') + '</button>';
-  $('[data-kpi="calculation_type"]', row).value = data.calculation_type || 'percentage';
-  $('[data-kpi="calculation_type"]', row).addEventListener('change', () => updateKpiRow(row));
-  $$('input', row).forEach(input => input.addEventListener('input', () => updateKpiRow(row)));
-  $('button', row).addEventListener('click', () => {
-    row.remove();
-    if (!$('#report-kpi-editor').children.length) addKpiRow();
-  });
-  $('#report-kpi-editor').append(row);
-  updateKpiRow(row);
-  refreshIcons(row);
-}
-
-function updateKpiRow(row) {
-  const type = $('[data-kpi="calculation_type"]', row).value;
-  const target = Number($('[data-kpi="target"]', row).value || 0);
-  const actual = Number($('[data-kpi="actual"]', row).value || 0);
-  const achievement = $('[data-kpi="achievement"]', row);
-  achievement.readOnly = type === 'percentage';
-  if (type === 'percentage') achievement.value = target > 0 ? ((actual / target) * 100).toFixed(2) : '0.00';
-}
-
-function collectKpis() {
-  return $$('.kpi-row', $('#report-kpi-editor')).map(row => {
-    const result = {};
-    $$('[data-kpi]', row).forEach(field => result[field.dataset.kpi] = field.value);
-    return result;
-  }).filter(row => row.name.trim());
-}
-
-function updateBudgetCalculation() {
-  const form = $('#report-editor-form');
-  const allocated = Number(form.elements.budget_allocated.value || 0);
-  const actual = Number(form.elements.budget_actual.value || 0);
-  form.elements.budget_remaining.value = (allocated - actual).toFixed(2);
-  form.elements.budget_usage.value = (allocated > 0 ? actual / allocated * 100 : 0).toFixed(2);
-}
-
-function syncReportSourceLabel() {
-  const text = selectedTournamentName();
-  $('#report-source-summary').textContent = text
-    ? 'ระบบจะดึงทีม นักกีฬา ชนิดกีฬา และผลการแข่งขันจาก ' + text
-    : 'ระบบจะคำนวณข้อมูลจากรายการแข่งขันทั้งหมดที่มีอยู่ในระบบ';
-  syncReportAiFields();
-}
-
-function renderReportSource(data) {
-  const summary = data?.summary || {};
-  $('#report-source-summary').textContent = 'พบ ' + (summary.sports || 0) + ' ชนิดกีฬา, ' + (summary.competitions || 0) + ' การแข่งขัน, ' + (summary.departments || 0) + ' หน่วยงาน และนักกีฬา ' + (summary.athletes || 0) + ' คน';
-  const matches = data?.matches || [];
-  $('#report-results-preview').innerHTML = matches.length
-    ? '<div class="compact-result-list">' + matches.slice(0, 8).map(row => '<div><span>' + escapeHtml(row.sport_name || '-') + '</span><strong>' + escapeHtml(row.team1_name + ' ' + row.score_label + ' ' + row.team2_name) + '</strong></div>').join('') + '</div>' + (matches.length > 8 ? '<p class="muted">และอีก ' + (matches.length - 8) + ' รายการ</p>' : '')
-    : '<p class="muted">ยังไม่มีข้อมูลการแข่งขันในขอบเขตที่เลือก</p>';
-}
-
-function renderReportAttachments(files) {
-  $('#report-attachments-list').innerHTML = files.length
-    ? '<ul class="attachment-list">' + files.map(file => '<li><a href="' + escapeAttr(file.file_url) + '" target="_blank" rel="noopener">' + escapeHtml(file.file_name) + '</a><span>' + escapeHtml(file.note || '') + '</span></li>').join('') + '</ul>'
-    : '<p class="muted">ยังไม่มีไฟล์แนบ</p>';
-}
-
-async function uploadPendingReportFiles(reportId) {
-  const input = $('#report-attachment-file');
-  const files = [...input.files];
-  for (const file of files) {
-    await request('reports.attachment', {
-      report_id: reportId,
-      file_name: file.name,
-      data_url: await fileToDataUrl(file),
-      note: $('#report-attachment-note').value,
-    });
-  }
-  if (files.length) {
-    input.value = '';
-    $('#report-attachment-note').value = '';
-  }
-}
-
-async function renderStoredReportPreview(report) {
-  const exported = await request('reports.export', { id: report.id });
-  $('#stored-report-preview').innerHTML =
-    '<div class="report-preview-toolbar"><span class="status-badge success">' + escapeHtml(report.status_label) + '</span><div class="actions">' +
-    '<button class="btn small primary" id="report-download-pdf" type="button">' + icon('file-down') + '<span>ดาวน์โหลด PDF</span></button></div></div>' +
-    '<iframe title="ตัวอย่างรายงาน ' + escapeAttr(report.title) + '" src="' + escapeAttr(exported.report_url) + '"></iframe>';
-  $('#report-download-pdf').addEventListener('click', event => runTask(event.currentTarget, () => downloadReportPdf(report.id, exported)));
-  refreshIcons($('#stored-report-preview'));
-}
-
-async function viewStoredReport(id) {
-  const report = await request('reports.get', { id });
-  openReportBuilder(report);
-  await renderStoredReportPreview(report);
-  setReportStep(4);
-}
-
-async function editStoredReport(id) {
-  openReportBuilder(await request('reports.get', { id }));
-}
-
-async function exportStoredReport(id) {
-  const result = await request('reports.export', { id });
-  await downloadReportPdf(id, result);
-}
-
-async function downloadReportPdf(id, exported = null) {
-  if (typeof window.html2pdf !== 'function') {
-    throw new Error('ไม่พบเครื่องมือสร้าง PDF กรุณารีเฟรชหน้าแล้วลองใหม่');
-  }
-  const result = exported || await request('reports.export', { id });
-  const frame = document.createElement('iframe');
-  frame.setAttribute('aria-hidden', 'true');
-  frame.style.cssText = 'position:fixed;left:-10000px;top:0;width:900px;height:1200px;opacity:0;pointer-events:none;border:0';
-  frame.src = result.report_url;
-  document.body.append(frame);
-  try {
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('โหลดรูปแบบรายงานไม่สำเร็จ')), 15000);
-      frame.addEventListener('load', () => { clearTimeout(timer); resolve(); }, { once: true });
-      frame.addEventListener('error', () => { clearTimeout(timer); reject(new Error('โหลดรูปแบบรายงานไม่สำเร็จ')); }, { once: true });
-    });
-    const reportDocument = frame.contentDocument;
-    const source = reportDocument?.querySelector('main');
-    if (!source) throw new Error('ไม่พบเนื้อหารายงานสำหรับสร้าง PDF');
-    if (reportDocument.fonts?.ready) await reportDocument.fonts.ready;
-    const style = reportDocument.createElement('style');
-    style.textContent = 'body{background:#fff!important}main{width:182mm!important;margin:0!important;padding:0!important;box-shadow:none!important}.cover{min-height:260mm!important;page-break-after:auto!important}.book-page{page-break-before:auto!important}';
-    reportDocument.head.append(style);
-    if (typeof frame.contentWindow.html2pdf !== 'function') {
-      const library = reportDocument.createElement('script');
-      library.src = document.querySelector('script[src*="html2pdf"]')?.src || '';
-      await new Promise((resolve, reject) => {
-        library.addEventListener('load', resolve, { once: true });
-        library.addEventListener('error', () => reject(new Error('โหลดเครื่องมือสร้าง PDF ไม่สำเร็จ')), { once: true });
-        reportDocument.head.append(library);
-      });
-    }
-    const pdfOptions = frame.contentWindow.JSON.parse(JSON.stringify({
-      margin: [14, 14, 16, 14],
-      filename: result.pdf_filename || `rmutt-sport-report-${id}.pdf`,
-      image: { type: 'jpeg', quality: 0.98 },
-      html2canvas: { scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false },
-      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait', compress: true },
-      pagebreak: { mode: ['css', 'legacy'], before: '.book-page' },
-    }));
-    const worker = frame.contentWindow.html2pdf().set(pdfOptions).from(source).toPdf();
-    await worker.get('pdf').then(pdf => {
-      const pages = pdf.internal.getNumberOfPages();
-      for (let page = 1; page <= pages; page += 1) {
-        pdf.setPage(page);
-        pdf.setFontSize(9);
-        pdf.setTextColor(100);
-        pdf.text(`${page} / ${pages}`, 196, 289, { align: 'right' });
-      }
-    });
-    const blob = await worker.outputPdf('blob');
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = result.pdf_filename || `rmutt-sport-report-${id}.pdf`;
-    document.body.append(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
-    toast('ดาวน์โหลดไฟล์ PDF แล้ว');
-  } finally {
-    frame.remove();
-  }
-}
-
-async function setReportStatus(id, status) {
-  await request('reports.status', { id, status });
-  await loadReportsAdmin();
-  toast('เปลี่ยนสถานะรายงานแล้ว');
-}
-
-function syncReportAiFields() {
-  // Kept as a compatibility hook for existing report editor calls.
-}
-
 function debounce(callback, delay) {
   let timer;
   return (...args) => {
     clearTimeout(timer);
     timer = setTimeout(() => callback(...args), delay);
   };
-}
-
-function ensureAiReportTools(settings) {
-  const head = $('#report-ai-tools') || $('#view-reports .section-head');
-  if (!head) return;
-  let status = $('#ai-provider-status');
-  if (!status) {
-    status = document.createElement('span');
-    status.id = 'ai-provider-status';
-    status.className = 'badge';
-    head.append(status);
-  }
-  status.textContent = settings.configured ? `Gemini: ${settings.default_model}` : 'AI: local-summary';
-
-  if ($('#ai-system-button')) return;
-  const testButton = document.createElement('button');
-  testButton.id = 'ai-test-button';
-  testButton.className = 'btn small';
-  testButton.type = 'button';
-  testButton.innerHTML = `${icon('plug-zap')}<span>ทดสอบ AI</span>`;
-  testButton.addEventListener('click', () => runTask(testButton, async () => {
-    const result = await request('ai.test');
-    renderAiTestResult(result);
-    toast(result.ok ? 'Gemini เชื่อมต่อสำเร็จ' : 'ยังเชื่อม Gemini ไม่สำเร็จ', !result.ok);
-  }));
-  head.append(testButton);
-
-  const button = document.createElement('button');
-  button.id = 'ai-system-button';
-  button.className = 'btn small';
-  button.type = 'button';
-  button.innerHTML = `${icon('sparkles')}<span>สรุปภาพรวม AI</span>`;
-  button.addEventListener('click', () => runTask(button, async () => {
-    const result = await request('ai.system', { instruction: $('#report-form [name=instruction]').value || '' });
-    renderAiOutput('#report-output', result);
-  }));
-  head.append(button);
-  refreshIcons(head);
-}
-
-function renderAiTestResult(result) {
-  $('#report-output').innerHTML = `
-    <div class="ai-meta"><span class="badge">${escapeHtml(result.provider || 'local-summary')}</span><span>${escapeHtml(result.model || '')}</span></div>
-    <p><strong>${result.ok ? 'เชื่อมต่อ AI สำเร็จ' : 'เชื่อมต่อ AI ยังไม่สำเร็จ'}</strong></p>
-    <p>${escapeHtml(result.message || '')}</p>
-    <div class="ai-diagnostics">
-      <span>DNS: ${escapeHtml(result.dns || '-')}</span>
-      <span>TCP 443: ${result.tcp_443 ? 'ผ่าน' : 'ไม่ผ่าน'}</span>
-      <span>PHP cURL: ${result.php_curl ? 'เปิดใช้งาน' : 'ไม่พร้อม'}</span>
-      ${result.tcp_error ? `<span>Network: ${escapeHtml(result.tcp_error)}</span>` : ''}
-    </div>
-    ${result.latency_ms ? `<p class="muted">Latency: ${escapeHtml(result.latency_ms)} ms</p>` : ''}
-  `;
-}
-
-function renderReportResult(result) {
-  $('#report-output').innerHTML = `
-    <article class="formal-report-card">
-      <div class="ai-meta"><span class="badge">${escapeHtml(result.provider || 'local-summary')}</span><span>${escapeHtml(result.model || '')}</span></div>
-      <header class="formal-report-head">
-        <p class="eyebrow">รายงานระบบบริหารจัดการแข่งขันกีฬา</p>
-        <h3>${escapeHtml(result.report_type_label || result.title || 'รายงานระบบกีฬา')}</h3>
-        <dl>
-          <div><dt>เลขที่เอกสาร</dt><dd>${escapeHtml(result.report_id || result.document_id || '-')}</dd></div>
-          <div><dt>วันที่จัดทำ</dt><dd>${escapeHtml(result.created_at_label || result.created_at || '-')}</dd></div>
-          <div><dt>ผู้จัดทำ</dt><dd>${escapeHtml(result.generated_by || '-')}</dd></div>
-        </dl>
-      </header>
-      <section>
-        <h4>สรุปผู้บริหาร</h4>
-        <p>${escapeHtml(result.executive_summary || '')}</p>
-      </section>
-      ${renderMetricTable(result.metrics)}
-      ${renderList('ประเด็นที่ควรดำเนินการต่อ', result.analysis)}
-      ${renderList('ความเสี่ยงและข้อควรพิจารณา', result.risks)}
-      ${renderList('ข้อเสนอแนะ', result.recommendations)}
-      <div class="report-actions">
-        ${result.word_url ? `<a class="btn primary" href="${escapeAttr(result.word_url)}" target="_blank" rel="noopener" download>ดาวน์โหลด Word</a>` : ''}
-        ${result.report_url ? `<a class="btn primary" href="${escapeAttr(result.report_url)}" target="_blank" rel="noopener" download>ดาวน์โหลดรายงาน HTML</a>` : ''}
-        <button class="btn" type="button" onclick="window.print()">พิมพ์ / บันทึกเป็น PDF</button>
-        <a class="btn ghost" href="${escapeAttr(result.document_url)}" target="_blank" rel="noopener">ข้อมูล JSON</a>
-        <a class="btn ghost" href="${escapeAttr(result.sheet_url)}" target="_blank" rel="noopener">ตาราง CSV</a>
-      </div>
-    </article>
-  `;
-}
-
-function renderMetricTable(metrics = {}) {
-  const labels = {
-    sports: 'จำนวนกีฬา',
-    activeSports: 'กีฬาเปิดใช้งาน',
-    teams: 'จำนวนทีม',
-    approvedTeams: 'ทีมที่อนุมัติ',
-    students: 'จำนวนนักกีฬา',
-    tournaments: 'จำนวนรายการแข่งขัน',
-    matches: 'จำนวนแมตช์',
-    completedMatches: 'แมตช์ที่บันทึกผลแล้ว',
-  };
-  const rows = Object.entries(labels)
-    .filter(([key]) => Object.prototype.hasOwnProperty.call(metrics, key))
-    .map(([key, label]) => `<tr><th>${escapeHtml(label)}</th><td>${escapeHtml(metrics[key])}</td></tr>`)
-    .join('');
-  return rows ? `<section><h4>ตัวชี้วัดจากระบบ</h4><table class="report-metrics"><tbody>${rows}</tbody></table></section>` : '';
 }
 
 function renderAiOutput(selector, result) {
@@ -3009,7 +1825,7 @@ function renderMatchCards(selector, rows) {
   }
   const resultsView = selector.includes('results');
   target.classList.toggle('match-list-results', resultsView);
-  target.innerHTML = rows.map(row => resultsView ? `
+  target.innerHTML = rows.map(row => row.race_entries?.length ? renderRaceResultCard(row) : (!row.team1_id && !row.team2_id) ? renderRaceScheduleCard(row) : resultsView ? `
     <article class="match-card result-match-card">
       <header class="result-card-context">
         <div><span class="badge match-status status-${matchStatusClass(row.status)}">${escapeHtml(row.status_label || row.status || '-')}</span><small>${escapeHtml(row.match_code || '')}</small></div>
@@ -3067,34 +1883,17 @@ function renderMatchCards(selector, rows) {
   refreshIcons(target);
 }
 
-function renderNewsCards(selector, rows) {
-  const target = $(selector);
-  if (!rows || !rows.length) {
-    target.innerHTML = emptyState('ยังไม่มีข่าว');
-    return;
-  }
-  target.innerHTML = rows.map(row => `
-    <article class="news-card">
-      <div class="news-image">
-        ${row.cover_image_url ? `<img src="${escapeAttr(row.cover_image_url)}" alt="">` : '<span>SPORT TOURNAMENT</span>'}
-      </div>
-      <div class="news-body">
-        <span class="badge">${escapeHtml(row.news_type_label || 'ข่าวสาร')}</span>
-        <h3>${escapeHtml(row.title || '')}</h3>
-        <p>${escapeHtml(row.excerpt || row.body || '')}</p>
-        <a class="news-read btn ghost" href="?view=public-news-detail&amp;id=${encodeURIComponent(row.id)}">อ่านข่าว ${icon('arrow-up-right')}</a>
-        <small class="muted">${escapeHtml(row.published_at || row.created_at || '')}</small>
-      </div>
-    </article>
-  `).join('');
-  $$('.news-read', target).forEach((button, index) => {
-    button.setAttribute('aria-label', `อ่านข่าว ${rows[index].title || ''}`);
-    button.addEventListener('click', event => {
-      event.preventDefault();
-      openNews(rows[index], rows);
-    });
-  });
-  refreshIcons(target);
+function renderRaceResultCard(row) {
+  const ranked = (row.race_entries || []).filter(entry => entry.rank_number).slice(0, 8);
+  return `<article class="match-card race-public-card"><header><span class="badge status-completed">ผลทางการ</span><strong>${escapeHtml(row.sport_name || 'กีฬา')} · ${escapeHtml(row.round_name || 'รอบแข่งขัน')}</strong></header>
+    <p>${escapeHtml(row.tournament_name || '')} · ${escapeHtml(row.scheduled_at || '')}</p>
+    <ol>${ranked.map(entry => `<li><b>${escapeHtml(entry.rank_number)}</b><span>${escapeHtml(entry.display_name)}<small>${escapeHtml(entry.department_name || entry.department_code || '')}</small></span><strong>${formatRaceTime(entry.verified_time_ms)} วินาที</strong><em>${escapeHtml(entry.points)} คะแนน</em></li>`).join('')}</ol>
+    ${(row.race_entries || []).filter(entry => !entry.rank_number).map(entry => `<small>${escapeHtml(entry.display_name)} · ${escapeHtml(entry.result_status)}</small>`).join('')}</article>`;
+}
+
+function renderRaceScheduleCard(row) {
+  return `<article class="match-card race-public-card"><header><span class="badge status-${matchStatusClass(row.status)}">${escapeHtml(row.status_label || 'รอแข่งขัน')}</span><strong>${escapeHtml(row.sport_name || 'กีฬา')} · ${escapeHtml(row.round_name || 'รอบแข่งขัน')}</strong></header>
+    <p>${escapeHtml(row.tournament_name || '')} · ${escapeHtml(row.scheduled_at || 'รอประกาศเวลา')} · ${escapeHtml(row.venue || 'รอประกาศสนาม')}</p></article>`;
 }
 
 function renderTable(selector, columns, rows) {

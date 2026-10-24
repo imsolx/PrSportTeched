@@ -141,6 +141,7 @@ final class Database
         }
         $pdo->exec($schema);
         self::ensurePortableColumns($pdo);
+        self::consolidateLegacyRegistrationRole($pdo);
         if ($driver === 'mysql') {
             self::ensureMysqlIndexes($pdo);
         }
@@ -151,6 +152,23 @@ final class Database
             'SELECT id, sport_id FROM tournaments WHERE sport_id IS NOT NULL'
         ));
         self::backfillCompetitionModel($pdo);
+    }
+
+    private static function consolidateLegacyRegistrationRole(PDO $pdo): void
+    {
+        $roles = [
+            ':operation_admin' => Auth::ROLE_ADMIN,
+            ':registration_officer' => 'registration_officer',
+        ];
+        $users = $pdo->prepare(
+            'UPDATE users SET role = :operation_admin, updated_at = :updated_at WHERE role = :registration_officer'
+        );
+        $users->execute($roles + [':updated_at' => self::now()]);
+
+        $invites = $pdo->prepare(
+            'UPDATE user_invites SET role = :operation_admin WHERE role = :registration_officer'
+        );
+        $invites->execute($roles);
     }
 
     private static function seedBootstrapAdmin(PDO $pdo): void
@@ -221,17 +239,12 @@ final class Database
             ['team_members', 'idx_team_members_student', 'student_id'],
             ['matches', 'idx_matches_tournament', 'tournament_id'],
             ['match_events', 'idx_match_events_match', 'match_id, elapsed_seconds'],
+            ['match_result_revisions', 'idx_match_result_revisions_result', 'match_result_id, revision_number'],
             ['sport_rule_versions', 'idx_rule_versions_sport', 'sport_id, is_active'],
             ['teams', 'idx_teams_sport', 'sport_id'],
             ['news', 'idx_news_status_type', 'status, news_type'],
             ['audit_logs', 'idx_audit_created_at', 'created_at'],
             ['user_invites', 'idx_user_invites_status_expires', 'status, expires_at'],
-            ['report_templates', 'idx_report_templates_category', 'category_id'],
-            ['reports', 'idx_reports_status_year', 'status, academic_year'],
-            ['reports', 'idx_reports_category_template', 'category_id, template_id'],
-            ['reports', 'idx_reports_tournament', 'tournament_id'],
-            ['report_kpis', 'idx_report_kpis_report', 'report_id'],
-            ['report_attachments', 'idx_report_attachments_report', 'report_id'],
         ];
 
         $exists = $pdo->prepare(
@@ -276,6 +289,14 @@ final class Database
                 'clock_seconds' => 'INTEGER NOT NULL DEFAULT 0',
                 'clock_status' => "VARCHAR(30) NOT NULL DEFAULT 'stopped'",
                 'overtime_count' => 'INTEGER NOT NULL DEFAULT 0',
+                'action_revision' => 'INTEGER NOT NULL DEFAULT 0',
+            ],
+            'match_entries' => [
+                'revision_number' => 'INTEGER NOT NULL DEFAULT 0',
+            ],
+            'sport_rule_versions' => [
+                'scoring_type' => "VARCHAR(40) NOT NULL DEFAULT 'SCORE'",
+                'scoring_config' => 'TEXT',
             ],
             'news' => [
                 'source_url' => 'TEXT',
@@ -350,19 +371,20 @@ final class Database
         $pdo->exec('UPDATE teams SET sport_id = (SELECT sport_id FROM tournaments WHERE tournaments.id = teams.tournament_id) WHERE sport_id IS NULL');
         $pdo->exec('UPDATE matches SET sport_id = COALESCE((SELECT sport_id FROM teams WHERE teams.id = matches.team1_id), (SELECT sport_id FROM tournaments WHERE tournaments.id = matches.tournament_id)) WHERE sport_id IS NULL');
 
-        $sports = $pdo->query('SELECT id, name, type, max_players, rules FROM sports ORDER BY id')->fetchAll();
+        $sports = $pdo->query('SELECT id, name, type, max_players, rules, icon FROM sports ORDER BY id')->fetchAll();
         $nextId = (int) $pdo->query('SELECT COALESCE(MAX(id), 0) + 1 FROM sport_rule_versions')->fetchColumn();
         $exists = $pdo->prepare('SELECT id FROM sport_rule_versions WHERE sport_id = :sport_id AND is_active = 1 LIMIT 1');
         $create = $pdo->prepare(
             'INSERT INTO sport_rule_versions
-             (id, sport_id, version_number, name, category, player_type, team_size, scoring_system, match_format, period_format, overtime_rules, tie_break_rules, ranking_rules, event_types, custom_rules, is_active, created_by, created_at, updated_at)
-             VALUES (:id, :sport_id, 1, :name, :category, :player_type, :team_size, :scoring_system, :match_format, :period_format, :overtime_rules, :tie_break_rules, :ranking_rules, :event_types, :custom_rules, 1, :created_by, :created_at, :updated_at)'
+             (id, sport_id, version_number, name, category, player_type, team_size, scoring_type, scoring_config, scoring_system, match_format, period_format, overtime_rules, tie_break_rules, ranking_rules, event_types, custom_rules, is_active, created_by, created_at, updated_at)
+             VALUES (:id, :sport_id, 1, :name, :category, :player_type, :team_size, :scoring_type, :scoring_config, :scoring_system, :match_format, :period_format, :overtime_rules, :tie_break_rules, :ranking_rules, :event_types, :custom_rules, 1, :created_by, :created_at, :updated_at)'
         );
         foreach ($sports as $sport) {
             $exists->execute([':sport_id' => $sport['id']]);
             if ($exists->fetchColumn()) {
                 continue;
             }
+            $detectedType = ScoringTypeDetector::detect($sport);
             $create->execute([
                 ':id' => $nextId++,
                 ':sport_id' => $sport['id'],
@@ -370,6 +392,8 @@ final class Database
                 ':category' => (string) $sport['type'],
                 ':player_type' => (string) $sport['type'],
                 ':team_size' => max(1, (int) $sport['max_players']),
+                ':scoring_type' => $detectedType,
+                ':scoring_config' => json_encode(ScoringTypeDetector::defaultConfig($detectedType), JSON_UNESCAPED_UNICODE),
                 ':scoring_system' => json_encode(['mode' => 'points', 'win_by' => 'highest', 'event_points' => 1], JSON_UNESCAPED_UNICODE),
                 ':match_format' => json_encode(['allow_draw' => true], JSON_UNESCAPED_UNICODE),
                 ':period_format' => json_encode(['count' => 2, 'duration_minutes' => 45, 'names' => ['ครึ่งแรก', 'ครึ่งหลัง']], JSON_UNESCAPED_UNICODE),
@@ -388,6 +412,33 @@ final class Database
                 ':created_by' => 'migration',
                 ':created_at' => $now,
                 ':updated_at' => $now,
+            ]);
+        }
+        $upgradeRule = $pdo->prepare('UPDATE sport_rule_versions SET scoring_type = :scoring_type, scoring_config = :scoring_config WHERE id = :id');
+        foreach ($pdo->query('SELECT id, scoring_type, scoring_config, scoring_system, match_format, overtime_rules, tie_break_rules, period_format FROM sport_rule_versions')->fetchAll() as $legacyRule) {
+            if (trim((string) ($legacyRule['scoring_config'] ?? '')) !== '') {
+                continue;
+            }
+            $scoring = json_decode((string) ($legacyRule['scoring_system'] ?? '{}'), true) ?: [];
+            $match = json_decode((string) ($legacyRule['match_format'] ?? '{}'), true) ?: [];
+            $overtime = json_decode((string) ($legacyRule['overtime_rules'] ?? '{}'), true) ?: [];
+            $tieBreak = json_decode((string) ($legacyRule['tie_break_rules'] ?? '{}'), true) ?: [];
+            $period = json_decode((string) ($legacyRule['period_format'] ?? '{}'), true) ?: [];
+            $type = ['sets' => 'SET', 'time' => 'TIME', 'rank' => 'RACE_POSITION'][(string) ($scoring['mode'] ?? 'points')] ?? 'SCORE';
+            $config = match ($type) {
+                'SCORE' => [
+                    'allow_draw' => !empty($match['allow_draw']),
+                    'allow_extra_time' => !empty($overtime['enabled']),
+                    'allow_penalty' => (string) ($tieBreak['method'] ?? 'draw') === 'penalty',
+                    'include_in_standings' => true,
+                ],
+                'SET' => ['best_of' => max(1, (int) ($period['count'] ?? 3)), 'include_in_standings' => true],
+                default => ['include_in_standings' => false],
+            };
+            $upgradeRule->execute([
+                ':scoring_type' => $type,
+                ':scoring_config' => json_encode($config, JSON_UNESCAPED_UNICODE),
+                ':id' => $legacyRule['id'],
             ]);
         }
         $pdo->exec('UPDATE matches SET rule_version_id = (SELECT id FROM sport_rule_versions WHERE sport_rule_versions.sport_id = matches.sport_id AND is_active = 1 ORDER BY version_number DESC LIMIT 1) WHERE rule_version_id IS NULL');

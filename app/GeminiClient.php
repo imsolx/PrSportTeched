@@ -10,7 +10,7 @@ final class GeminiClient
     public function __construct(?string $model = null)
     {
         $this->apiKey = (string) getenv('GEMINI_API_KEY');
-        $this->model = trim((string) ($model ?: getenv('GEMINI_MODEL') ?: getenv('REPORT_AI_MODEL') ?: 'gemini-3.5-flash'));
+        $this->model = trim((string) ($model ?: getenv('GEMINI_MODEL') ?: 'gemini-3.5-flash'));
         $this->endpoint = rtrim((string) (getenv('GEMINI_API_ENDPOINT') ?: 'https://generativelanguage.googleapis.com/v1beta'), '/');
     }
 

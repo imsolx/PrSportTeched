@@ -1,8 +1,12 @@
 <?php
 declare(strict_types=1);
 
+require_once __DIR__ . '/Modules/TournamentModule.php';
+
 final class AppService
 {
+    use TournamentModule;
+
     private const AI_MODELS = [
         'local-summary',
         'gemini-3.8-flash',
@@ -171,7 +175,8 @@ final class AppService
 
             case 'matches.list':
             case 'listMatches':
-                return self::listMatches((string) ($payload['tournament_id'] ?? self::legacyArg($payload, 0, '')));
+                return self::listMatches((string) ($payload['tournament_id']
+                    ?? (isset($payload['args']) ? self::legacyArg($payload, 0, '') : '')));
             case 'matches.forNews':
             case 'listMatchesForNews':
                 return self::listMatchesForNews();
@@ -190,14 +195,43 @@ final class AppService
                     (string) ($payload['match_id'] ?? self::legacyArg($payload, 0)),
                     isset($payload['args']) ? (array) self::legacyArg($payload, 1, []) : ($payload['data'] ?? $payload)
                 );
+            case 'matches.resultDetail':
+                return self::matchResultDetail((string) ($payload['match_id'] ?? ''));
             case 'matches.center':
                 return self::matchCenter((string) ($payload['match_id'] ?? ''));
             case 'matches.clock':
                 return self::updateMatchClock((string) ($payload['match_id'] ?? ''), $payload);
             case 'matches.event':
                 return self::saveMatchEvent($payload);
+            case 'matches.eventUpdate':
+                return self::updateMatchEvent((string) ($payload['id'] ?? ''), $payload);
+            case 'matches.recordingDraft':
+                return self::saveMatchRecordingDraft($payload);
+            case 'matches.scoreCorrection':
+                return self::correctMatchTeamScore($payload);
             case 'matches.eventVoid':
-                return self::voidMatchEvent((string) ($payload['id'] ?? ''));
+                return self::voidMatchEvent((string) ($payload['id'] ?? ''), $payload);
+            case 'matches.resultDelete':
+                return self::deleteMatchResult((string) ($payload['match_id'] ?? ''), $payload);
+            case 'matches.officialOptions':
+                return self::matchOfficialOptions();
+            case 'matches.assignments':
+                Auth::canManageMasterData();
+                return self::fetchAll('SELECT * FROM match_official_assignments WHERE match_id = :id ORDER BY user_id', [':id' => (string) ($payload['match_id'] ?? '')]);
+            case 'matches.assignOfficials':
+                return self::assignMatchOfficials((string) ($payload['match_id'] ?? ''), (array) ($payload['assignments'] ?? []));
+            case 'matches.entries':
+                return self::matchEntries((string) ($payload['match_id'] ?? ''));
+            case 'matches.entryCandidates':
+                return self::matchEntryCandidates((string) ($payload['match_id'] ?? ''));
+            case 'matches.entrySave':
+                return self::saveMatchEntry($payload);
+            case 'matches.entryImport':
+                return self::importMatchEntries($payload);
+            case 'matches.entryResult':
+                return self::recordMatchEntryResult($payload);
+            case 'matches.entriesConfirm':
+                return self::confirmMatchEntries((string) ($payload['match_id'] ?? ''));
             case 'standings.list':
                 return self::listStandings((string) ($payload['tournament_id'] ?? ''));
 
@@ -226,6 +260,8 @@ final class AppService
             case 'users.save':
             case 'saveUser':
                 return self::saveUser(isset($payload['args']) ? self::legacyArg($payload) : $payload);
+            case 'users.status':
+                return self::setUserActiveStatus($payload);
             case 'users.delete':
             case 'deleteUser':
                 return self::deleteUser((string) ($payload['id'] ?? self::legacyArg($payload, 0)));
@@ -242,7 +278,6 @@ final class AppService
 
             case 'ai.models':
             case 'getAiTaskModels':
-            case 'getReportAiSettings':
                 return self::aiTaskModels();
             case 'ai.test':
             case 'testAiConnection':
@@ -261,29 +296,6 @@ final class AppService
                 return self::generateNewsDraft(isset($payload['args'])
                     ? ['match_id' => (string) self::legacyArg($payload, 0, '')]
                     : $payload);
-            case 'reports.options':
-                return self::reportOptions();
-            case 'reports.list':
-                return self::listReports($payload);
-            case 'reports.get':
-                return self::getReport((string) ($payload['id'] ?? ''));
-            case 'reports.save':
-                return self::saveReport($payload);
-            case 'reports.status':
-                return self::updateReportStatus((string) ($payload['id'] ?? ''), (string) ($payload['status'] ?? ''));
-            case 'reports.delete':
-                return self::deleteReport((string) ($payload['id'] ?? ''));
-            case 'reports.export':
-                return self::exportStoredReport((string) ($payload['id'] ?? ''));
-            case 'reports.attachment':
-                return self::uploadReportAttachment($payload, $files);
-            case 'reports.aiDraft':
-            case 'generateReportFormDraft':
-            case 'reports.summarize':
-                return self::generateReportFormDraft($payload);
-            case 'reports.generate':
-            case 'generateFormalAiReport':
-                return self::generateFormalReport(isset($payload['args']) ? self::legacyArg($payload) : $payload);
         }
 
         throw new InvalidArgumentException('ไม่พบ action: ' . $action);
@@ -296,6 +308,7 @@ final class AppService
             'faculty_code' => '102',
             'current_academic_year' => '69',
             'staff_invites_enabled' => '1',
+            'staff_invite_expiry_minutes' => '45',
         ];
         $settingsKey = Database::isMysql() ? '`key`' : 'key';
         foreach (self::fetchAll("SELECT {$settingsKey}, value FROM settings") as $row) {
@@ -361,9 +374,8 @@ final class AppService
             if (in_array((string) $row['status'], ['completed', 'cancelled'], true)) {
                 return false;
             }
-            if (empty($row['team1_id']) || empty($row['team2_id'])) {
-                return false;
-            }
+            if ((empty($row['team1_id']) || empty($row['team2_id']))
+                && !self::fetchOne('SELECT id FROM match_entries WHERE match_id = :id LIMIT 1', [':id' => $row['id']])) return false;
             return empty($filters['tournament_id']) || (string) $row['tournament_id'] === (string) $filters['tournament_id'];
         }));
         usort($rows, fn(array $a, array $b): int => strcmp((string) ($a['scheduled_at'] ?? ''), (string) ($b['scheduled_at'] ?? '')));
@@ -382,6 +394,18 @@ final class AppService
             return empty($filters['tournament_id']) || (string) $row['tournament_id'] === (string) $filters['tournament_id'];
         }));
         usort($rows, fn(array $a, array $b): int => strcmp((string) ($b['confirmed_at'] ?: $b['updated_at']), (string) ($a['confirmed_at'] ?: $a['updated_at'])));
+        foreach ($rows as &$row) {
+            if (empty($row['team1_id']) && empty($row['team2_id'])
+                || self::fetchOne('SELECT id FROM match_entries WHERE match_id = :id LIMIT 1', [':id' => $row['id']])) {
+                $row['race_entries'] = self::fetchAll('SELECT match_entries.display_name, match_entries.department_code,
+                    departments.name AS department_name, match_entries.result_status, match_entries.verified_time_ms,
+                    match_entries.rank_number, match_entries.points
+                    FROM match_entries LEFT JOIN departments ON departments.code = match_entries.department_code
+                    WHERE match_entries.match_id = :id ORDER BY COALESCE(rank_number, 999), lane_number, match_entries.id', [':id' => $row['id']]);
+                $row['score_label'] = count($row['race_entries']) . ' ผู้เข้าแข่งขัน';
+            }
+        }
+        unset($row);
         return array_slice($rows, 0, 50);
     }
 
@@ -528,7 +552,6 @@ final class AppService
             Auth::ROLE_SUPER_ADMIN,
             Auth::ROLE_ADMIN,
             Auth::ROLE_SPORT_HEAD,
-            Auth::ROLE_REGISTRATION_OFFICER,
             Auth::ROLE_RESULT_OFFICER,
             Auth::ROLE_PUBLIC_RELATIONS,
         ]);
@@ -551,7 +574,7 @@ final class AppService
 
     public static function listDepartments(): array
     {
-        Auth::requireRole([Auth::ROLE_SUPER_ADMIN, Auth::ROLE_ADMIN, Auth::ROLE_SPORT_HEAD, Auth::ROLE_PUBLIC_RELATIONS, Auth::ROLE_REGISTRATION_OFFICER]);
+        Auth::requireRole([Auth::ROLE_SUPER_ADMIN, Auth::ROLE_ADMIN, Auth::ROLE_SPORT_HEAD, Auth::ROLE_PUBLIC_RELATIONS]);
         return self::activeDepartments();
     }
 
@@ -678,6 +701,16 @@ final class AppService
         $teamSize = max(1, (int) ($payload['team_size'] ?? $sport['max_players'] ?? 1));
         $periodCount = max(1, (int) ($payload['period_count'] ?? 2));
         $periodMinutes = max(0, (int) ($payload['period_minutes'] ?? 45));
+        $scoringType = strtoupper(trim((string) ($payload['scoring_type'] ?? 'SCORE')));
+        if (!in_array($scoringType, ScoringEngine::TYPES, true)) {
+            throw new InvalidArgumentException('ประเภทการคิดคะแนนไม่ถูกต้อง');
+        }
+        $configText = trim((string) ($payload['scoring_config'] ?? ''));
+        $scoringConfig = $configText === '' ? [] : json_decode($configText, true);
+        if (!is_array($scoringConfig)) {
+            throw new InvalidArgumentException('Scoring Config ต้องเป็น JSON Object ที่ถูกต้อง');
+        }
+        $scoringConfig = array_replace(ScoringTypeDetector::defaultConfig($scoringType), $scoringConfig, self::scoringConfigFromPayload($scoringType, $payload));
         $eventTypes = self::payloadArray($payload['event_types'] ?? []);
         if (!$eventTypes) {
             $eventTypes = self::defaultEventTypes();
@@ -716,6 +749,8 @@ final class AppService
             'category' => trim((string) ($payload['category'] ?? $sport['type'])),
             'player_type' => (string) ($payload['player_type'] ?? $sport['type']),
             'team_size' => $teamSize,
+            'scoring_type' => $scoringType,
+            'scoring_config' => json_encode($scoringConfig, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
             'scoring_system' => json_encode([
                 'mode' => (string) ($payload['scoring_mode'] ?? 'points'),
                 'win_by' => (string) ($payload['win_by'] ?? 'highest'),
@@ -760,13 +795,21 @@ final class AppService
     public static function listSports(): array
     {
         Auth::canViewSportsWork();
-        return self::fetchAll('SELECT * FROM sports ORDER BY id DESC');
+        return self::fetchAll('SELECT sports.*,
+            (SELECT scoring_type FROM sport_rule_versions
+             WHERE sport_id = sports.id AND is_active = 1
+             ORDER BY version_number DESC LIMIT 1) AS scoring_type
+            FROM sports ORDER BY sports.id DESC');
     }
 
     public static function createSport(array $payload): array
     {
         Auth::canManageMasterData();
         $record = self::validateSportPayload($payload);
+        $scoringType = strtoupper(trim((string) ($payload['scoring_type'] ?? '')));
+        if (!in_array($scoringType, ScoringTypeDetector::SELECTABLE_TYPES, true)) {
+            throw new InvalidArgumentException('กรุณาเลือกหนึ่งใน 12 รูปแบบการบันทึกผล');
+        }
         if (self::fetchOne('SELECT id FROM sports WHERE LOWER(name) = LOWER(:name)', [':name' => $record['name']])) {
             throw new RuntimeException('ชื่อกีฬานี้มีอยู่แล้ว กรุณาใช้ชื่ออื่น');
         }
@@ -781,26 +824,63 @@ final class AppService
             'category' => $row['type'],
             'player_type' => $row['type'],
             'team_size' => $row['max_players'],
+            'scoring_type' => $scoringType,
+            'scoring_config' => json_encode(ScoringTypeDetector::defaultConfig($scoringType), JSON_UNESCAPED_UNICODE),
             'custom_rules' => $row['rules'],
             'is_active' => true,
         ]);
         self::audit('create', 'sport', (string) $row['id'], $row);
-        return $row;
+        return array_replace($row, ['scoring_type' => $scoringType]);
     }
 
     public static function updateSport(string $id, array $payload): array
     {
         Auth::canManageMasterData();
         $record = self::validateSportPayload($payload);
+        $activeRule = self::fetchOne(
+            'SELECT * FROM sport_rule_versions WHERE sport_id = :sport_id AND is_active = 1 ORDER BY version_number DESC LIMIT 1',
+            [':sport_id' => $id]
+        );
+        $currentScoringType = strtoupper((string) ($activeRule['scoring_type'] ?? ''));
+        $scoringType = strtoupper(trim((string) ($payload['scoring_type'] ?? $currentScoringType)));
+        if (!in_array($scoringType, ScoringTypeDetector::SELECTABLE_TYPES, true)) {
+            throw new InvalidArgumentException('กรุณาเลือกหนึ่งใน 12 รูปแบบการบันทึกผล');
+        }
         if (self::fetchOne('SELECT id FROM sports WHERE LOWER(name) = LOWER(:name) AND id != :id', [
             ':name' => $record['name'],
             ':id' => $id,
         ])) {
             throw new RuntimeException('ชื่อกีฬานี้มีอยู่แล้ว กรุณาใช้ชื่ออื่น');
         }
-        $row = self::updateRow('sports', $id, $record);
-        self::audit('update', 'sport', $id, $row);
-        return $row;
+        $pdo = Database::pdo();
+        $pdo->beginTransaction();
+        try {
+            $row = self::updateRow('sports', $id, $record);
+            if (!$activeRule || $scoringType !== $currentScoringType) {
+                $decodedRule = $activeRule ? self::decodeSportRule($activeRule) : [];
+                self::saveSportRule([
+                    'sport_id' => $id,
+                    'name' => (string) ($decodedRule['name'] ?? 'กติกามาตรฐาน'),
+                    'category' => $row['type'],
+                    'player_type' => $row['type'],
+                    'team_size' => $row['max_players'],
+                    'scoring_type' => $scoringType,
+                    'scoring_config' => json_encode(ScoringTypeDetector::defaultConfig($scoringType), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                    'event_types' => $decodedRule['event_types_data'] ?? self::defaultEventTypes(),
+                    'custom_rules' => $row['rules'],
+                    'is_active' => true,
+                ]);
+            }
+            self::audit('update', 'sport', $id, array_replace($row, [
+                'previous_scoring_type' => $currentScoringType,
+                'scoring_type' => $scoringType,
+            ]));
+            $pdo->commit();
+            return array_replace($row, ['scoring_type' => $scoringType]);
+        } catch (Throwable $error) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $error;
+        }
     }
 
     public static function toggleSport(string $id, $active): array
@@ -823,400 +903,37 @@ final class AppService
         return $deleted;
     }
 
-    public static function listTournaments(): array
-    {
-        Auth::canViewSportsWork();
-        $sportIds = self::groupConcat('ts.sport_id');
-        $sportNames = self::groupConcat('s2.name', ' · ');
-        return self::enrichedTournamentRows(self::fetchAll(
-            "SELECT tournaments.*, sports.name AS primary_sport_name,
-                    (SELECT {$sportIds} FROM tournament_sports ts WHERE ts.tournament_id = tournaments.id) AS sport_ids_csv,
-                    (SELECT {$sportNames} FROM tournament_sports ts2
-                     JOIN sports s2 ON s2.id = ts2.sport_id WHERE ts2.tournament_id = tournaments.id) AS sport_names
-             FROM tournaments
-             LEFT JOIN sports ON sports.id = tournaments.sport_id
-             ORDER BY tournaments.id DESC"
-        ));
-    }
-
-    public static function createTournament(array $payload): array
-    {
-        Auth::canManageTournaments();
-        $sportIds = self::tournamentSportIds($payload);
-        $record = self::validateTournamentPayload($payload);
-        $record['id'] = self::nextId('tournaments');
-        $record['published_at'] = '';
-        $record['created_by'] = Auth::currentUser()['email'] ?? '';
-        $record['created_at'] = Database::now();
-        $record['updated_at'] = Database::now();
-        $row = self::insertRow('tournaments', $record);
-        self::replaceTournamentSports((string) $row['id'], $sportIds);
-        $row = self::enrichedTournamentRows([$row])[0];
-        self::audit('create', 'tournament', (string) $row['id'], $row);
-        return $row;
-    }
-
-    public static function updateTournament(string $id, array $payload): array
-    {
-        Auth::canManageTournaments();
-        $current = self::findById('tournaments', $id);
-        $next = array_replace($current, $payload);
-        $sportIds = array_key_exists('sport_ids', $payload)
-            ? self::tournamentSportIds($next)
-            : self::tournamentSportIds(['sport_id' => $payload['sport_id'] ?? $current['sport_id']]);
-        $next['sport_ids'] = $sportIds;
-        $row = self::updateRow('tournaments', $id, self::validateTournamentPayload($next));
-        self::replaceTournamentSports($id, $sportIds);
-        $row = self::enrichedTournamentRows([$row])[0];
-        self::audit('update', 'tournament', $id, $row);
-        return $row;
-    }
-
-    public static function deleteTournament(string $id): array
-    {
-        Auth::canManageTournaments();
-        if (self::countRows('teams', 'tournament_id = :id', [':id' => $id]) > 0 || self::countRows('matches', 'tournament_id = :id', [':id' => $id]) > 0) {
-            throw new RuntimeException('ลบรายการแข่งขันไม่ได้ เพราะมีทีมหรือแมตช์ผูกอยู่');
-        }
-        self::deleteRowsWhere('standings', 'tournament_id = :id', [':id' => $id]);
-        self::deleteRowsWhere('tournament_departments', 'tournament_id = :id', [':id' => $id]);
-        self::deleteRowsWhere('tournament_sport_settings', 'tournament_id = :id', [':id' => $id]);
-        $deleted = self::deleteRow('tournaments', $id);
-        self::audit('delete', 'tournament', $id, $deleted);
-        return $deleted;
-    }
-
-    public static function tournamentWorkspace(string $tournamentId): array
-    {
-        Auth::canViewSportsWork();
-        if ($tournamentId === '') {
-            throw new InvalidArgumentException('กรุณาเลือกรายการแข่งขัน');
-        }
-        $tournament = self::enrichedTournamentRows([self::findById('tournaments', $tournamentId)])[0];
-        foreach ($tournament['sport_ids'] as $sportId) {
-            self::ensureTournamentSportSetting($tournamentId, (string) $sportId);
-        }
-        $sports = self::fetchAll(
-            'SELECT sports.*, tournament_sport_settings.id AS setting_id,
-                    tournament_sport_settings.rule_version_id, tournament_sport_settings.status AS setting_status,
-                    tournament_sport_settings.notes AS setting_notes,
-                    sport_rule_versions.name AS rule_name, sport_rule_versions.version_number AS rule_version_number
-             FROM tournament_sports
-             JOIN sports ON sports.id = tournament_sports.sport_id
-             LEFT JOIN tournament_sport_settings
-               ON tournament_sport_settings.tournament_id = tournament_sports.tournament_id
-              AND tournament_sport_settings.sport_id = tournament_sports.sport_id
-             LEFT JOIN sport_rule_versions ON sport_rule_versions.id = tournament_sport_settings.rule_version_id
-             WHERE tournament_sports.tournament_id = :tournament_id
-             ORDER BY sports.name',
-            [':tournament_id' => $tournamentId]
-        );
-
-        $totals = [
-            'sports' => count($sports),
-            'departments' => 0,
-            'students' => self::countRows('students'),
-            'teams' => self::countRows('teams', 'tournament_id = :id', [':id' => $tournamentId]),
-            'members' => 0,
-            'matches' => self::countRows('matches', 'tournament_id = :id', [':id' => $tournamentId]),
-            'completed_matches' => self::countRows('matches', 'tournament_id = :id AND status = :status', [':id' => $tournamentId, ':status' => 'completed']),
-        ];
-        $memberCount = self::fetchOne(
-            'SELECT COUNT(*) AS total FROM team_members JOIN teams ON teams.id = team_members.team_id WHERE teams.tournament_id = :id',
-            [':id' => $tournamentId]
-        );
-        $totals['members'] = (int) ($memberCount['total'] ?? 0);
-
-        foreach ($sports as &$sport) {
-            $sportId = (string) $sport['id'];
-            $departments = self::fetchAll(
-                'SELECT departments.code, departments.name
-                 FROM tournament_departments
-                 JOIN departments ON departments.code = tournament_departments.department_code
-                 WHERE tournament_departments.tournament_id = :tournament_id AND tournament_departments.sport_id = :sport_id
-                 ORDER BY departments.name',
-                [':tournament_id' => $tournamentId, ':sport_id' => $sportId]
-            );
-            $teamCount = self::countRows('teams', 'tournament_id = :tournament_id AND sport_id = :sport_id', [
-                ':tournament_id' => $tournamentId,
-                ':sport_id' => $sportId,
-            ]);
-            $memberRow = self::fetchOne(
-                'SELECT COUNT(*) AS total FROM team_members JOIN teams ON teams.id = team_members.team_id
-                 WHERE teams.tournament_id = :tournament_id AND teams.sport_id = :sport_id',
-                [':tournament_id' => $tournamentId, ':sport_id' => $sportId]
-            );
-            $matchCount = self::countRows('matches', 'tournament_id = :tournament_id AND sport_id = :sport_id', [
-                ':tournament_id' => $tournamentId,
-                ':sport_id' => $sportId,
-            ]);
-            $sport['departments'] = $departments;
-            $sport['department_codes'] = array_column($departments, 'code');
-            $sport['department_count'] = count($departments);
-            $sport['team_count'] = $teamCount;
-            $sport['member_count'] = (int) ($memberRow['total'] ?? 0);
-            $sport['match_count'] = $matchCount;
-            $sport['rule_ready'] = (string) ($sport['setting_status'] ?? '') === 'ready' && !empty($sport['rule_version_id']);
-            $sport['departments_ready'] = true;
-            $sport['roster_ready'] = $teamCount > 0 && (int) $sport['member_count'] > 0;
-            $sport['schedule_ready'] = $matchCount > 0;
-            $totals['departments'] += count($departments);
-        }
-        unset($sport);
-
-        $all = static fn(string $key): bool => (bool) $sports && count(array_filter($sports, fn(array $row): bool => !empty($row[$key]))) === count($sports);
-        $steps = [
-            1 => true,
-            2 => count($sports) > 0,
-            3 => $all('rule_ready'),
-            4 => true,
-            5 => $totals['students'] > 0,
-            6 => $totals['teams'] > 0,
-            7 => $totals['members'] > 0,
-            8 => $all('rule_ready') && $all('roster_ready'),
-            9 => $totals['matches'] > 0,
-            10 => $totals['completed_matches'] > 0,
-            11 => false,
-        ];
-        $suggestedStep = 11;
-        foreach ($steps as $number => $complete) {
-            if (!$complete) {
-                $suggestedStep = $number;
-                break;
-            }
-        }
-
-        return [
-            'tournament' => $tournament,
-            'sports' => $sports,
-            'totals' => $totals,
-            'steps' => $steps,
-            'suggested_step' => $suggestedStep,
-        ];
-    }
-
-    public static function saveTournamentSportSetting(array $payload): array
-    {
-        Auth::canManageTournaments();
-        $tournamentId = trim((string) ($payload['tournament_id'] ?? ''));
-        $sportId = trim((string) ($payload['sport_id'] ?? ''));
-        self::assertTournamentSport($tournamentId, $sportId);
-        $ruleId = trim((string) ($payload['rule_version_id'] ?? ''));
-        $rule = self::findById('sport_rule_versions', $ruleId);
-        if ((string) $rule['sport_id'] !== $sportId) {
-            throw new InvalidArgumentException('ชุดกติกาต้องเป็นของกีฬาที่เลือก');
-        }
-        $status = (string) ($payload['status'] ?? 'pending');
-        if (!in_array($status, ['pending', 'ready', 'locked'], true)) {
-            throw new InvalidArgumentException('สถานะการตั้งค่ากีฬาไม่ถูกต้อง');
-        }
-        $record = [
-            'tournament_id' => $tournamentId,
-            'sport_id' => $sportId,
-            'rule_version_id' => $ruleId,
-            'status' => $status,
-            'notes' => trim((string) ($payload['notes'] ?? '')),
-            'updated_at' => Database::now(),
-        ];
-        $existing = self::fetchOne(
-            'SELECT * FROM tournament_sport_settings WHERE tournament_id = :tournament_id AND sport_id = :sport_id',
-            [':tournament_id' => $tournamentId, ':sport_id' => $sportId]
-        );
-        if ($existing) {
-            $row = self::updateRow('tournament_sport_settings', (string) $existing['id'], $record);
-        } else {
-            $record['id'] = self::nextId('tournament_sport_settings');
-            $record['created_at'] = Database::now();
-            $row = self::insertRow('tournament_sport_settings', $record);
-        }
-        self::audit('configure_sport', 'tournament', $tournamentId, [
-            'sport_id' => $sportId,
-            'rule_version_id' => $ruleId,
-            'status' => $status,
-        ]);
-        return $row;
-    }
-
-    public static function saveTournamentDepartments(array $payload): array
-    {
-        Auth::canManageTournaments();
-        $tournamentId = trim((string) ($payload['tournament_id'] ?? ''));
-        $sportId = trim((string) ($payload['sport_id'] ?? ''));
-        self::assertTournamentSport($tournamentId, $sportId);
-        $codes = $payload['department_codes'] ?? [];
-        if (!is_array($codes)) {
-            $codes = preg_split('/\s*,\s*/', trim((string) $codes), -1, PREG_SPLIT_NO_EMPTY);
-        }
-        $codes = array_values(array_unique(array_filter(array_map(static fn($value): string => trim((string) $value), $codes))));
-        if (!$codes) {
-            throw new InvalidArgumentException('กรุณาเลือกสาขาที่เข้าร่วมอย่างน้อย 1 สาขา');
-        }
-        foreach ($codes as $code) {
-            if (!self::activeDepartmentExists($code)) {
-                throw new InvalidArgumentException('ไม่พบรหัสสาขา: ' . $code);
-            }
-        }
-        $pdo = Database::pdo();
-        $pdo->beginTransaction();
-        try {
-            self::deleteRowsWhere(
-                'tournament_departments',
-                'tournament_id = :tournament_id AND sport_id = :sport_id',
-                [':tournament_id' => $tournamentId, ':sport_id' => $sportId]
-            );
-            foreach ($codes as $code) {
-                self::insertRow('tournament_departments', [
-                    'id' => self::nextId('tournament_departments'),
-                    'tournament_id' => $tournamentId,
-                    'sport_id' => $sportId,
-                    'department_code' => $code,
-                    'created_at' => Database::now(),
-                ]);
-            }
-            $pdo->commit();
-        } catch (Throwable $error) {
-            if ($pdo->inTransaction()) {
-                $pdo->rollBack();
-            }
-            throw $error;
-        }
-        self::audit('configure_departments', 'tournament', $tournamentId, [
-            'sport_id' => $sportId,
-            'department_codes' => $codes,
-        ]);
-        return ['tournament_id' => $tournamentId, 'sport_id' => $sportId, 'department_codes' => $codes];
-    }
-
-    public static function generateTournamentFixtures(array $payload): array
-    {
-        Auth::canManageTournaments();
-        $tournamentId = trim((string) ($payload['tournament_id'] ?? ''));
-        $sportId = trim((string) ($payload['sport_id'] ?? ''));
-        self::assertTournamentSport($tournamentId, $sportId);
-        $tournament = self::findById('tournaments', $tournamentId);
-        if (self::countRows('matches', 'tournament_id = :tournament_id AND sport_id = :sport_id', [':tournament_id' => $tournamentId, ':sport_id' => $sportId]) > 0) {
-            throw new RuntimeException('กีฬานี้มีแมตช์อยู่แล้ว กรุณาจัดการแมตช์เดิมก่อนสร้างสายใหม่');
-        }
-        $teams = self::fetchAll("SELECT id FROM teams WHERE tournament_id = :tournament_id AND sport_id = :sport_id AND status NOT IN ('draft', 'rejected', 'withdrawn') ORDER BY id", [':tournament_id' => $tournamentId, ':sport_id' => $sportId]);
-        if (count($teams) < 2) {
-            throw new RuntimeException('ต้องมีอย่างน้อย 2 ทีมในกีฬาที่เลือก');
-        }
-        $ids = array_column($teams, 'id');
-        $format = (string) $tournament['format'];
-        $fixtures = [];
-        $byes = [];
-        if ($format === 'knockout') {
-            [$fixtures, $byes] = self::knockoutFixtures($ids);
-        } elseif ($format === 'round_robin') {
-            $fixtures = self::roundRobinFixtures($ids, 'พบกันหมด');
-        } else {
-            if (count($ids) < 4) {
-                throw new RuntimeException('รอบแบ่งกลุ่มต้องมีอย่างน้อย 4 ทีม');
-            }
-            $groupCount = min(intdiv(count($ids), 2), max(2, min(8, (int) ($payload['group_count'] ?? 2))));
-            $groups = array_fill(0, $groupCount, []);
-            foreach ($ids as $index => $id) {
-                $groups[$index % $groupCount][] = $id;
-            }
-            foreach ($groups as $index => $groupIds) {
-                $fixtures = array_merge($fixtures, self::roundRobinFixtures($groupIds, 'กลุ่ม ' . chr(65 + $index)));
-            }
-            if ($format === 'group_knockout') {
-                [$elimination] = self::knockoutFixtures(array_fill(0, $groupCount * 2, null), 'รอบแพ้คัดออก');
-                $fixtures = array_merge($fixtures, $elimination);
-            }
-        }
-        if (!$fixtures) {
-            throw new RuntimeException('ยังไม่สามารถจัดคู่จากทีมที่เลือกได้');
-        }
-        $pdo = Database::pdo();
-        $pdo->beginTransaction();
-        try {
-            $created = [];
-            foreach ($fixtures as $fixture) {
-                $created[] = self::createMatch($fixture + ['tournament_id' => $tournamentId, 'sport_id' => $sportId]);
-            }
-            $pdo->commit();
-        } catch (Throwable $error) {
-            if ($pdo->inTransaction()) {
-                $pdo->rollBack();
-            }
-            throw $error;
-        }
-        self::audit('generate_fixtures', 'tournament', $tournamentId, ['sport_id' => $sportId, 'format' => $format, 'count' => count($created)]);
-        return ['format' => $format, 'sport_id' => $sportId, 'matches' => $created, 'bye_team_ids' => $byes];
-    }
-
-    private static function roundRobinFixtures(array $teamIds, string $roundName): array
-    {
-        $fixtures = [];
-        for ($i = 0; $i < count($teamIds); $i++) {
-            for ($j = $i + 1; $j < count($teamIds); $j++) {
-                $fixtures[] = ['round_name' => $roundName, 'team1_id' => $teamIds[$i], 'team2_id' => $teamIds[$j]];
-            }
-        }
-        return $fixtures;
-    }
-
-    private static function knockoutFixtures(array $teamIds, string $prefix = ''): array
-    {
-        $slots = array_map(static fn($id): array => ['active' => true, 'team_id' => $id], $teamIds);
-        $target = 1;
-        while ($target < count($slots)) {
-            $target *= 2;
-        }
-        while (count($slots) < $target) {
-            $slots[] = ['active' => false, 'team_id' => null];
-        }
-        $fixtures = [];
-        $byes = [];
-        while (count($slots) > 1) {
-            $roundSize = count($slots);
-            $label = $roundSize === 2 ? 'รอบชิงชนะเลิศ' : ($roundSize === 4 ? 'รอบรองชนะเลิศ' : 'รอบ ' . $roundSize . ' ทีม');
-            if ($prefix !== '') {
-                $label = $prefix . ' · ' . $label;
-            }
-            $next = [];
-            for ($i = 0; $i < $roundSize; $i += 2) {
-                $first = $slots[$i];
-                $second = $slots[$i + 1];
-                if (!$first['active'] && !$second['active']) {
-                    $next[] = ['active' => false, 'team_id' => null];
-                } elseif (!$first['active'] || !$second['active']) {
-                    $advancing = $first['active'] ? $first : $second;
-                    if ($advancing['team_id'] !== null) {
-                        $byes[] = $advancing['team_id'];
-                    }
-                    $next[] = $advancing;
-                } else {
-                    $fixtures[] = ['round_name' => $label, 'team1_id' => $first['team_id'], 'team2_id' => $second['team_id']];
-                    $next[] = ['active' => true, 'team_id' => null];
-                }
-            }
-            $slots = $next;
-        }
-        return [$fixtures, array_values(array_unique($byes))];
-    }
 
     public static function listStudents(array $filters): array
     {
-        Auth::canManageRegistration();
+        $user = Auth::requireRole([
+            Auth::ROLE_SUPER_ADMIN,
+            Auth::ROLE_ADMIN,
+            Auth::ROLE_SPORT_HEAD,
+        ]);
         $q = trim((string) ($filters['q'] ?? ''));
-        if ($q !== '') {
-            return self::fetchAll(
-                'SELECT students.*, departments.name AS department_name
-                 FROM students
-                 LEFT JOIN departments ON departments.code = students.department_code
-                 WHERE students.student_code LIKE :q OR students.first_name LIKE :q OR students.last_name LIKE :q OR students.department_code LIKE :q
-                 ORDER BY students.id DESC LIMIT 200',
-                [':q' => '%' . $q . '%']
-            );
+        $where = [];
+        $params = [];
+        if (($user['role'] ?? '') === Auth::ROLE_SPORT_HEAD) {
+            $department = trim((string) ($user['department_code'] ?? ''));
+            if ($department === '') {
+                return [];
+            }
+            $where[] = 'students.department_code = :department_code';
+            $params[':department_code'] = $department;
         }
+        if ($q !== '') {
+            $where[] = '(students.student_code LIKE :q OR students.first_name LIKE :q OR students.last_name LIKE :q OR students.department_code LIKE :q)';
+            $params[':q'] = '%' . $q . '%';
+        }
+        $whereSql = $where ? ' WHERE ' . implode(' AND ', $where) : '';
         return self::fetchAll(
             'SELECT students.*, departments.name AS department_name
              FROM students
              LEFT JOIN departments ON departments.code = students.department_code
+             ' . $whereSql . '
              ORDER BY students.id DESC LIMIT 200'
+            , $params
         );
     }
 
@@ -1296,7 +1013,23 @@ final class AppService
         $rows = self::joinedTeams();
         if ((Auth::currentUser()['role'] ?? '') === Auth::ROLE_SPORT_HEAD) {
             $allowed = array_filter(array_map('trim', explode(',', (string) (Auth::currentUser()['sport_ids'] ?? ''))));
-            $rows = array_values(array_filter($rows, static fn(array $row): bool => in_array((string) ($row['sport_id'] ?? ''), $allowed, true)));
+            $department = trim((string) (Auth::currentUser()['department_code'] ?? ''));
+            $rows = array_values(array_filter($rows, static fn(array $row): bool => $department !== ''
+                && (string) ($row['department_code'] ?? '') === $department
+                && in_array((string) ($row['sport_id'] ?? ''), $allowed, true)));
+        } elseif ((Auth::currentUser()['role'] ?? '') === Auth::ROLE_RESULT_OFFICER) {
+            $user = Auth::currentUser();
+            $assignments = self::fetchAll('SELECT matches.team1_id, matches.team2_id FROM match_official_assignments
+                JOIN matches ON matches.id = match_official_assignments.match_id WHERE match_official_assignments.user_id = :id',
+                [':id' => $user['id']]);
+            $allowedIds = [];
+            foreach ($assignments as $assignment) {
+                $allowedIds[] = (string) ($assignment['team1_id'] ?? '');
+                $allowedIds[] = (string) ($assignment['team2_id'] ?? '');
+            }
+            $department = trim((string) ($user['department_code'] ?? ''));
+            $rows = array_values(array_filter($rows, static fn(array $row): bool => in_array((string) $row['id'], $allowedIds, true)
+                && ($department === '' || (string) ($row['department_code'] ?? '') === $department)));
         }
         if ($tournamentId !== '') {
             $rows = array_values(array_filter($rows, fn(array $row): bool => (string) $row['tournament_id'] === $tournamentId));
@@ -1304,11 +1037,22 @@ final class AppService
         return $rows;
     }
 
+    private static function assertManagedTeamScope(array $team): void
+    {
+        if ((Auth::currentUser()['role'] ?? '') !== Auth::ROLE_SPORT_HEAD) return;
+        Auth::assertSportScope((string) ($team['sport_id'] ?? ''));
+        $department = trim((string) (Auth::currentUser()['department_code'] ?? ''));
+        if ($department === '' || $department !== (string) ($team['department_code'] ?? '')) {
+            throw new RuntimeException('ทีมนี้ไม่ได้อยู่ในสังกัดที่คุณดูแล');
+        }
+    }
+
     public static function createTeam(array $payload): array
     {
         Auth::canManageSports();
         $record = self::validateTeamPayload($payload);
         Auth::assertSportScope((string) $record['sport_id']);
+        self::assertManagedTeamScope($record);
         $record['id'] = self::nextId('teams');
         $record['status'] = 'submitted';
         $record['rejection_reason'] = '';
@@ -1327,8 +1071,10 @@ final class AppService
         Auth::canManageSports();
         $current = self::findById('teams', $id);
         Auth::assertSportScope((string) ($current['sport_id'] ?? ''));
+        self::assertManagedTeamScope($current);
         $record = self::validateTeamPayload(array_replace($current, $payload), true);
         Auth::assertSportScope((string) $record['sport_id']);
+        self::assertManagedTeamScope($record);
         $row = self::updateRow('teams', $id, $record);
         self::audit('update', 'team', $id, $row);
         return $row;
@@ -1337,7 +1083,7 @@ final class AppService
     public static function deleteTeam(string $id): array
     {
         Auth::canManageSports();
-        Auth::assertSportScope((string) self::findById('teams', $id)['sport_id']);
+        self::assertManagedTeamScope(self::findById('teams', $id));
         if (self::fetchOne('SELECT id FROM matches WHERE team1_id = :id OR team2_id = :id LIMIT 1', [':id' => $id])) {
             throw new RuntimeException('ลบทีมไม่ได้ เพราะทีมนี้ถูกใช้ในแมตช์แล้ว');
         }
@@ -1350,7 +1096,7 @@ final class AppService
     public static function updateTeamStatus(string $id, string $status, string $reason = ''): array
     {
         Auth::canManageSports();
-        Auth::assertSportScope((string) self::findById('teams', $id)['sport_id']);
+        self::assertManagedTeamScope(self::findById('teams', $id));
         if (!in_array($status, ['draft', 'submitted', 'approved', 'rejected', 'locked', 'withdrawn'], true)) {
             throw new InvalidArgumentException('สถานะทีมไม่ถูกต้อง');
         }
@@ -1368,7 +1114,7 @@ final class AppService
     {
         Auth::canManageSports();
         if ($teamId !== '') {
-            Auth::assertSportScope((string) self::findById('teams', $teamId)['sport_id']);
+            self::assertManagedTeamScope(self::findById('teams', $teamId));
         }
         $rows = self::joinedTeamMembers($teamId);
         if ((Auth::currentUser()['role'] ?? '') === Auth::ROLE_SPORT_HEAD) {
@@ -1392,11 +1138,12 @@ final class AppService
                     continue;
                 }
                 $teamId = trim((string) $row['team_id']);
-                $team = self::fetchOne('SELECT id, sport_id FROM teams WHERE id = :id', [':id' => $teamId]);
+                $team = self::fetchOne('SELECT id, sport_id, department_code FROM teams WHERE id = :id', [':id' => $teamId]);
                 if (!$team) {
                     throw new RuntimeException('ไม่พบทีมรหัส: ' . $teamId);
                 }
                 Auth::assertSportScope((string) ($team['sport_id'] ?? ''));
+                self::assertManagedTeamScope($team);
 
                 $student = self::findStudentByCodeOrId((string) ($row['student_code'] ?? $row['student_id'] ?? ''));
                 if (!$student) {
@@ -1439,9 +1186,9 @@ final class AppService
     {
         Auth::canManageSports();
         $current = self::findById('team_members', $id);
-        Auth::assertSportScope((string) self::findById('teams', (string) $current['team_id'])['sport_id']);
+        self::assertManagedTeamScope(self::findById('teams', (string) $current['team_id']));
         $teamId = trim((string) ($payload['team_id'] ?? $current['team_id']));
-        Auth::assertSportScope((string) self::findById('teams', $teamId)['sport_id']);
+        self::assertManagedTeamScope(self::findById('teams', $teamId));
         $student = self::findStudentByCodeOrId((string) ($payload['student_code'] ?? $payload['student_id'] ?? $current['student_id']));
         if (!$student) {
             throw new RuntimeException('ไม่พบนักกีฬา');
@@ -1471,19 +1218,123 @@ final class AppService
     {
         Auth::canManageSports();
         $member = self::findById('team_members', $id);
-        Auth::assertSportScope((string) self::findById('teams', (string) $member['team_id'])['sport_id']);
+        self::assertManagedTeamScope(self::findById('teams', (string) $member['team_id']));
         $deleted = self::deleteRow('team_members', $id);
         self::audit('delete_member', 'team_members', $id, $deleted);
         return $deleted;
+    }
+
+    public static function matchOfficialOptions(): array
+    {
+        Auth::canManageMasterData();
+        return self::fetchAll(
+            "SELECT id, name, email, role, department_code, sport_ids FROM users
+             WHERE is_active = 1 AND role IN ('result_officer', 'sport_head') ORDER BY name, id"
+        );
+    }
+
+    public static function assignMatchOfficials(string $matchId, array $assignments): array
+    {
+        Auth::canManageMasterData();
+        $match = self::findById('matches', $matchId);
+        $sportId = (string) ($match['sport_id'] ?: (self::findById('tournaments', (string) $match['tournament_id'])['sport_id'] ?? ''));
+        $teamIds = array_values(array_filter([(string) ($match['team1_id'] ?? ''), (string) ($match['team2_id'] ?? '')]));
+        $validated = [];
+        foreach ($assignments as $assignment) {
+            if (!is_array($assignment)) throw new InvalidArgumentException('ข้อมูลผู้รับผิดชอบไม่ถูกต้อง');
+            $userId = (string) ($assignment['user_id'] ?? '');
+            $user = self::findById('users', $userId);
+            if (!Auth::truthy($user['is_active'] ?? false) || !in_array((string) $user['role'], [Auth::ROLE_RESULT_OFFICER, Auth::ROLE_SPORT_HEAD], true)) {
+                throw new InvalidArgumentException('ผู้รับผิดชอบต้องเป็น Match Official หรือ Sport Manager ที่เปิดใช้งาน');
+            }
+            $allowedSports = array_filter(array_map('trim', explode(',', (string) ($user['sport_ids'] ?? ''))));
+            if (($user['role'] === Auth::ROLE_SPORT_HEAD || $allowedSports) && !in_array($sportId, $allowedSports, true)) {
+                throw new InvalidArgumentException('ผู้รับผิดชอบไม่ได้ดูแลกีฬาของแมตช์นี้');
+            }
+            $teamId = trim((string) ($assignment['team_id'] ?? ''));
+            if ($teamId !== '' && !in_array($teamId, $teamIds, true)) {
+                throw new InvalidArgumentException('ทีมที่มอบหมายไม่ได้อยู่ในแมตช์นี้');
+            }
+            $department = trim((string) ($user['department_code'] ?? ''));
+            if ($department !== '' && $teamIds) {
+                $scopeTeams = $teamId !== '' ? [$teamId] : $teamIds;
+                $inScope = false;
+                foreach ($scopeTeams as $candidateId) {
+                    $candidate = self::findById('teams', $candidateId);
+                    if ((string) $candidate['department_code'] === $department) $inScope = true;
+                }
+                if (!$inScope) throw new InvalidArgumentException('สังกัดของผู้รับผิดชอบไม่ตรงกับทีมที่มอบหมาย');
+            } elseif ($user['role'] === Auth::ROLE_SPORT_HEAD && $teamIds && $teamId === '') {
+                throw new InvalidArgumentException('Sport Manager ที่ไม่ระบุสังกัดต้องระบุทีมที่รับผิดชอบ');
+            }
+            if (isset($validated[$userId])) throw new InvalidArgumentException('มอบหมายผู้ใช้ซ้ำในแมตช์เดียวกัน');
+            $validated[$userId] = ['match_id' => $matchId, 'user_id' => $userId, 'team_id' => $teamId !== '' ? $teamId : null,
+                'assigned_by' => Auth::currentUser()['email'] ?? '', 'created_at' => Database::now()];
+        }
+        $pdo = Database::pdo();
+        $pdo->beginTransaction();
+        try {
+            self::deleteRowsWhere('match_official_assignments', 'match_id = :id', [':id' => $matchId]);
+            $insert = $pdo->prepare('INSERT INTO match_official_assignments (match_id, user_id, team_id, assigned_by, created_at)
+                VALUES (:match_id, :user_id, :team_id, :assigned_by, :created_at)');
+            foreach ($validated as $row) $insert->execute([
+                ':match_id' => $row['match_id'], ':user_id' => $row['user_id'], ':team_id' => $row['team_id'],
+                ':assigned_by' => $row['assigned_by'], ':created_at' => $row['created_at'],
+            ]);
+            self::audit('assign_officials', 'match', $matchId, ['user_ids' => array_keys($validated)]);
+            $pdo->commit();
+        } catch (Throwable $error) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $error;
+        }
+        return self::fetchAll('SELECT * FROM match_official_assignments WHERE match_id = :id ORDER BY user_id', [':id' => $matchId]);
+    }
+
+    private static function mayManageMatchResult(array $match): bool
+    {
+        $user = Auth::currentUser();
+        if (in_array((string) ($user['role'] ?? ''), [Auth::ROLE_SUPER_ADMIN, Auth::ROLE_ADMIN], true)) return true;
+        if (!in_array((string) ($user['role'] ?? ''), [Auth::ROLE_RESULT_OFFICER, Auth::ROLE_SPORT_HEAD], true)) return false;
+        $assignment = self::fetchOne('SELECT * FROM match_official_assignments WHERE match_id = :match_id AND user_id = :user_id',
+            [':match_id' => $match['id'], ':user_id' => $user['id']]);
+        if (!$assignment) return false;
+        $sportId = (string) ($match['sport_id'] ?: (self::findById('tournaments', (string) $match['tournament_id'])['sport_id'] ?? ''));
+        $allowedSports = array_filter(array_map('trim', explode(',', (string) ($user['sport_ids'] ?? ''))));
+        if (($user['role'] === Auth::ROLE_SPORT_HEAD || $allowedSports) && !in_array($sportId, $allowedSports, true)) return false;
+        $teamIds = array_values(array_filter([(string) ($match['team1_id'] ?? ''), (string) ($match['team2_id'] ?? '')]));
+        $scopedTeamId = (string) ($assignment['team_id'] ?? '');
+        if ($scopedTeamId !== '' && !in_array($scopedTeamId, $teamIds, true)) return false;
+        $department = trim((string) ($user['department_code'] ?? ''));
+        if ($department !== '' && $teamIds) {
+            foreach ($scopedTeamId !== '' ? [$scopedTeamId] : $teamIds as $teamId) {
+                $team = self::fetchOne('SELECT department_code FROM teams WHERE id = :id', [':id' => $teamId]);
+                if ((string) ($team['department_code'] ?? '') === $department) return true;
+            }
+            return false;
+        }
+        return !$teamIds || $user['role'] !== Auth::ROLE_SPORT_HEAD || $scopedTeamId !== '';
+    }
+
+    private static function assertMatchResultAccess(array $match): void
+    {
+        if (!self::mayManageMatchResult($match)) {
+            throw new RuntimeException('ไม่ได้รับมอบหมายให้บันทึกผลแมตช์นี้ หรืออยู่นอกขอบเขตทีม/สังกัดที่ดูแล');
+        }
+    }
+
+    private static function assertMatchReadAccess(array $match): void
+    {
+        if (in_array((string) (Auth::currentUser()['role'] ?? ''), [Auth::ROLE_SPORT_HEAD, Auth::ROLE_RESULT_OFFICER], true)) {
+            self::assertMatchResultAccess($match);
+        }
     }
 
     public static function listMatches(string $tournamentId = ''): array
     {
         Auth::canViewSportsWork();
         $rows = self::joinedMatches();
-        if ((Auth::currentUser()['role'] ?? '') === Auth::ROLE_SPORT_HEAD) {
-            $allowed = array_filter(array_map('trim', explode(',', (string) (Auth::currentUser()['sport_ids'] ?? ''))));
-            $rows = array_values(array_filter($rows, static fn(array $row): bool => in_array((string) ($row['sport_id'] ?? ''), $allowed, true)));
+        if (in_array((string) (Auth::currentUser()['role'] ?? ''), [Auth::ROLE_SPORT_HEAD, Auth::ROLE_RESULT_OFFICER], true)) {
+            $rows = array_values(array_filter($rows, static fn(array $row): bool => self::mayManageMatchResult($row)));
         }
         if ($tournamentId !== '') {
             $rows = array_values(array_filter($rows, fn(array $row): bool => (string) $row['tournament_id'] === $tournamentId));
@@ -1501,7 +1352,7 @@ final class AppService
 
     public static function createMatch(array $payload): array
     {
-        Auth::canManageSports();
+        Auth::canManageMasterData();
         self::validateMatchTeams($payload);
         $tournamentId = trim((string) ($payload['tournament_id'] ?? ''));
         $sportId = self::matchSportId($payload);
@@ -1540,7 +1391,7 @@ final class AppService
 
     public static function updateMatch(string $id, array $payload): array
     {
-        Auth::canManageSports();
+        Auth::canManageMasterData();
         $current = self::findById('matches', $id);
         Auth::assertSportScope((string) ($current['sport_id'] ?? ''));
         $next = array_replace($current, $payload);
@@ -1576,11 +1427,15 @@ final class AppService
 
     public static function deleteMatch(string $id): array
     {
-        Auth::canManageSports();
+        Auth::canManageMasterData();
         $match = self::findById('matches', $id);
         Auth::assertSportScope((string) ($match['sport_id'] ?? ''));
+        self::deleteRowsWhere('match_event_requests', 'match_id = :id', [':id' => $id]);
         self::deleteRowsWhere('match_events', 'match_id = :id', [':id' => $id]);
         self::deleteRowsWhere('match_periods', 'match_id = :id', [':id' => $id]);
+        self::deleteRowsWhere('match_entry_revisions', 'entry_id IN (SELECT id FROM match_entries WHERE match_id = :id)', [':id' => $id]);
+        self::deleteRowsWhere('match_entries', 'match_id = :id', [':id' => $id]);
+        self::deleteRowsWhere('match_official_assignments', 'match_id = :id', [':id' => $id]);
         $deleted = self::deleteRow('matches', $id);
         self::recalculateStandings((string) $match['tournament_id']);
         self::audit('delete', 'match', $id, $deleted);
@@ -1591,26 +1446,125 @@ final class AppService
     {
         Auth::canManageResults();
         $match = self::findById('matches', $id);
+        self::assertMatchResultAccess($match);
         Auth::assertSportScope((string) ($match['sport_id'] ?? ''));
-        $score1 = self::nullableInt($payload['team1_score'] ?? null);
-        $score2 = self::nullableInt($payload['team2_score'] ?? null);
-        if ($score1 === null || $score2 === null) {
-            throw new InvalidArgumentException('กรุณาระบุคะแนนทั้งสองฝั่ง');
-        }
         $rule = self::decodeSportRule(self::findById('sport_rule_versions', (string) $match['rule_version_id']));
-        $winner = self::determineMatchWinner($match, $score1, $score2, $rule, self::nullableId($payload['winner_team_id'] ?? null));
-        $row = self::updateRow('matches', $id, [
-            'status' => 'completed',
-            'clock_status' => 'stopped',
-            'team1_score' => $score1,
-            'team2_score' => $score2,
-            'winner_team_id' => $winner,
-            'confirmed_by' => Auth::currentUser()['email'] ?? '',
-            'confirmed_at' => Database::now(),
-        ]);
-        self::recalculateStandings((string) $match['tournament_id']);
-        self::audit('result', 'match', $id, $row);
-        return $row;
+        $sport = self::findById('sports', (string) $match['sport_id']);
+        $requestedType = strtoupper(trim((string) ($payload['scoring_type'] ?? '')));
+        $scoringType = in_array($requestedType, ScoringEngine::TYPES, true)
+            ? $requestedType
+            : ScoringTypeDetector::detect($sport, $rule);
+        $scoringConfig = $scoringType === (string) ($rule['scoring_type'] ?? '')
+            ? (array) ($rule['scoring_config_data'] ?? [])
+            : ScoringTypeDetector::defaultConfig($scoringType);
+        $resultPayload = self::payloadObject($payload['result_data'] ?? []);
+        if (!$resultPayload) {
+            $score1 = self::nullableInt($payload['team1_score'] ?? null);
+            $score2 = self::nullableInt($payload['team2_score'] ?? null);
+            if ($score1 === null || $score2 === null) {
+                throw new InvalidArgumentException('กรุณาระบุคะแนนทั้งสองฝั่ง');
+            }
+            $resultPayload = ['regular_score' => ['home' => $score1, 'away' => $score2]];
+        }
+        $resolved = ScoringEngine::resolve(
+            $scoringType,
+            $scoringConfig,
+            $resultPayload,
+            ['home_id' => $match['team1_id'], 'away_id' => $match['team2_id']]
+        );
+        $summary = $resolved['summary'];
+        $existing = self::fetchOne('SELECT * FROM match_results WHERE match_id = :match_id LIMIT 1', [':match_id' => $id]);
+        $expectedRevision = (int) ($payload['expected_revision'] ?? $existing['revision_number'] ?? 0);
+        if ($expectedRevision !== (int) ($existing['revision_number'] ?? 0)) {
+            throw new RuntimeException('ผลถูกแก้ไขโดยผู้ใช้อื่นแล้ว กรุณารีเฟรชก่อนบันทึกอีกครั้ง');
+        }
+        $reason = trim((string) ($payload['reason'] ?? ''));
+        if ($existing && $reason === '') {
+            throw new InvalidArgumentException('กรุณาระบุเหตุผลในการแก้ไขผลการแข่งขัน');
+        }
+        $pdo = Database::pdo();
+        $pdo->beginTransaction();
+        try {
+            $now = Database::now();
+            $email = Auth::currentUser()['email'] ?? '';
+            $stored = [
+                'match_id' => $id,
+                'scoring_type' => $resolved['scoring_type'],
+                'config_snapshot' => json_encode($scoringConfig, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                'result_data' => json_encode($resolved['result'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                'summary_json' => json_encode($summary, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                'updated_by' => $email,
+                'updated_at' => $now,
+            ];
+            if ($existing) {
+                $revision = (int) $existing['revision_number'] + 1;
+                self::insertRow('match_result_revisions', [
+                    'id' => self::nextId('match_result_revisions'),
+                    'match_result_id' => $existing['id'],
+                    'revision_number' => $revision,
+                    'old_result' => (string) $existing['result_data'],
+                    'new_result' => $stored['result_data'],
+                    'reason' => $reason,
+                    'updated_by' => $email,
+                    'created_at' => $now,
+                ]);
+                $stored['revision_number'] = $revision;
+                $update = $pdo->prepare('UPDATE match_results SET scoring_type = :type, config_snapshot = :config,
+                    result_data = :result, summary_json = :summary, updated_by = :updated_by,
+                    updated_at = :updated_at, revision_number = :revision
+                    WHERE id = :id AND revision_number = :expected');
+                $update->execute([':type' => $stored['scoring_type'], ':config' => $stored['config_snapshot'],
+                    ':result' => $stored['result_data'], ':summary' => $stored['summary_json'],
+                    ':updated_by' => $email, ':updated_at' => $now, ':revision' => $revision,
+                    ':id' => $existing['id'], ':expected' => $expectedRevision]);
+                if ($update->rowCount() !== 1) throw new RuntimeException('ผลถูกแก้ไขโดยผู้ใช้อื่นแล้ว กรุณารีเฟรชก่อนบันทึกอีกครั้ง');
+                $resultRow = self::findById('match_results', (string) $existing['id']);
+            } else {
+                $stored['id'] = self::nextId('match_results');
+                $stored['revision_number'] = 1;
+                $stored['created_by'] = $email;
+                $stored['created_at'] = $now;
+                $resultRow = self::insertRow('match_results', $stored);
+            }
+            $row = self::updateRow('matches', $id, [
+                'status' => 'completed',
+                'clock_status' => 'stopped',
+                'team1_score' => $summary['home_score'],
+                'team2_score' => $summary['away_score'],
+                'winner_team_id' => $summary['winner_id'],
+                'confirmed_by' => $email,
+                'confirmed_at' => $now,
+            ]);
+            self::recalculateStandings((string) $match['tournament_id']);
+            self::audit($existing ? 'result_update' : 'result', 'match', $id, [
+                'old_result' => $existing ? self::jsonObject((string) $existing['result_data']) : null,
+                'new_result' => $resolved['result'],
+                'summary' => $summary,
+                'reason' => $reason,
+            ]);
+            $pdo->commit();
+            return array_replace($row, ['result' => self::decodeMatchResult($resultRow)]);
+        } catch (Throwable $error) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $error;
+        }
+    }
+
+    public static function matchResultDetail(string $matchId): array
+    {
+        Auth::canViewSportsWork();
+        $match = self::findById('matches', $matchId);
+        self::assertMatchReadAccess($match);
+        Auth::assertSportScope((string) ($match['sport_id'] ?? ''));
+        $rule = self::decodeSportRule(self::findById('sport_rule_versions', (string) $match['rule_version_id']));
+        $sport = self::findById('sports', (string) $match['sport_id']);
+        $result = self::fetchOne('SELECT * FROM match_results WHERE match_id = :match_id LIMIT 1', [':match_id' => $matchId]);
+        return [
+            'match' => $match,
+            'rule' => $rule,
+            'suggested_scoring_type' => ScoringTypeDetector::detect($sport, $rule),
+            'result' => $result ? self::decodeMatchResult($result) : null,
+        ];
     }
 
     public static function matchCenter(string $matchId): array
@@ -1626,26 +1580,33 @@ final class AppService
         if (!$match) {
             throw new RuntimeException('ไม่พบแมตช์ที่เลือก');
         }
+        self::assertMatchReadAccess($match);
         $rule = self::decodeSportRule(self::findById('sport_rule_versions', (string) $match['rule_version_id']));
         self::ensureMatchPeriods($matchId, $rule);
+        $resolvedScoringType = self::resolvedMatchScoringType($match, $rule);
         $events = self::fetchAll(
             'SELECT match_events.*, teams.name AS team_name,
                     students.student_code, students.prefix, students.first_name, students.last_name
              FROM match_events
              LEFT JOIN teams ON teams.id = match_events.team_id
              LEFT JOIN students ON students.id = match_events.student_id
-             WHERE match_events.match_id = :match_id
+             WHERE match_events.match_id = :match_id AND match_events.event_type <> :draft_event
              ORDER BY match_events.period_number DESC, match_events.elapsed_seconds DESC, match_events.id DESC',
-            [':match_id' => $matchId]
+            [':match_id' => $matchId, ':draft_event' => 'recording_draft']
         );
         foreach ($events as &$event) {
             $event['student_name'] = trim(implode(' ', array_filter([$event['prefix'] ?? '', $event['first_name'] ?? '', $event['last_name'] ?? ''])));
             $event['metadata'] = self::jsonObject((string) ($event['metadata_json'] ?? '{}'));
         }
         unset($event);
+        $savedResult = self::fetchOne('SELECT * FROM match_results WHERE match_id = :match_id LIMIT 1', [':match_id' => $matchId]);
         return [
             'match' => $match,
             'rule' => $rule,
+            'resolved_scoring_type' => $resolvedScoringType,
+            'recording_draft' => self::latestMatchRecordingDraft($matchId),
+            'recording_history' => self::matchRecordingHistory($matchId),
+            'recording_result' => $savedResult ? self::decodeMatchResult($savedResult) : null,
             'periods' => self::fetchAll('SELECT * FROM match_periods WHERE match_id = :match_id ORDER BY period_number', [':match_id' => $matchId]),
             'events' => $events,
             'team1_members' => $match['team1_id'] ? self::joinedTeamMembers((string) $match['team1_id']) : [],
@@ -1657,6 +1618,10 @@ final class AppService
     {
         Auth::canManageResults();
         $match = self::findById('matches', $matchId);
+        self::assertMatchResultAccess($match);
+        if (in_array((string) ($match['status'] ?? ''), ['completed', 'cancelled', 'postponed'], true)) {
+            throw new RuntimeException('แมตช์นี้ไม่เปิดให้ควบคุมเวลาแล้ว');
+        }
         Auth::assertSportScope((string) ($match['sport_id'] ?? ''));
         $action = (string) ($payload['clock_action'] ?? 'pause');
         $seconds = max(0, (int) ($payload['clock_seconds'] ?? $match['clock_seconds'] ?? 0));
@@ -1691,11 +1656,95 @@ final class AppService
         return $row;
     }
 
+    private static function latestMatchRecordingDraft(string $matchId): ?array
+    {
+        $row = self::fetchOne('SELECT metadata_json, created_at, created_by FROM match_events
+            WHERE match_id = :match_id AND event_type = :event_type AND is_voided = 0
+            ORDER BY id DESC LIMIT 1', [':match_id' => $matchId, ':event_type' => 'recording_draft']);
+        if (!$row) return null;
+        $metadata = self::jsonObject((string) ($row['metadata_json'] ?? '{}'));
+        return [
+            'scoring_type' => (string) ($metadata['scoring_type'] ?? ''),
+            'result_data' => is_array($metadata['result_data'] ?? null) ? $metadata['result_data'] : [],
+            'created_at' => (string) $row['created_at'],
+            'created_by' => (string) $row['created_by'],
+        ];
+    }
+
+    private static function matchRecordingHistory(string $matchId): array
+    {
+        return array_map(static function (array $row): array {
+            $metadata = self::jsonObject((string) ($row['metadata_json'] ?? '{}'));
+            return [
+                'id' => $row['id'], 'note' => (string) $row['note'],
+                'scoring_type' => (string) ($metadata['scoring_type'] ?? ''),
+                'created_at' => (string) $row['created_at'],
+                'created_by' => (string) $row['created_by'],
+            ];
+        }, self::fetchAll('SELECT id, note, metadata_json, created_at, created_by FROM match_events
+            WHERE match_id = :match_id AND event_type = :event_type AND is_voided = 0
+            ORDER BY id DESC LIMIT 30', [':match_id' => $matchId, ':event_type' => 'recording_draft']));
+    }
+
+    public static function saveMatchRecordingDraft(array $payload): array
+    {
+        Auth::canManageResults();
+        $matchId = trim((string) ($payload['match_id'] ?? ''));
+        $match = self::findById('matches', $matchId);
+        self::assertMatchResultAccess($match);
+        Auth::assertSportScope((string) ($match['sport_id'] ?? ''));
+        if (in_array((string) ($match['status'] ?? ''), ['completed', 'cancelled', 'postponed'], true)) {
+            throw new RuntimeException('แมตช์นี้ไม่เปิดให้บันทึกแบบร่างแล้ว');
+        }
+        $rule = self::decodeSportRule(self::findById('sport_rule_versions', (string) $match['rule_version_id']));
+        $type = self::resolvedMatchScoringType($match, $rule);
+        if ((string) ($payload['scoring_type'] ?? '') !== $type) {
+            throw new InvalidArgumentException('รูปแบบบันทึกไม่ตรงกับกติกาที่ผูกกับแมตช์');
+        }
+        $resultData = self::payloadObject($payload['result_data'] ?? []);
+        $metadata = json_encode(['scoring_type' => $type, 'result_data' => $resultData], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($metadata === false || strlen($metadata) > 65535) throw new InvalidArgumentException('ข้อมูลแบบร่างมีขนาดใหญ่เกินไป');
+        $pdo = Database::pdo();
+        $pdo->beginTransaction();
+        try {
+            self::claimMatchActionRevision($matchId, (int) ($payload['expected_revision'] ?? $match['action_revision'] ?? 0));
+            $row = self::insertRow('match_events', [
+                'id' => self::nextId('match_events'), 'match_id' => $matchId,
+                'event_type' => 'recording_draft', 'team_id' => null, 'student_id' => null,
+                'period_number' => max(1, (int) ($match['current_period'] ?? 1)),
+                'elapsed_seconds' => max(0, (int) ($match['clock_seconds'] ?? 0)),
+                'added_time' => 0, 'points' => 0, 'card_type' => null,
+                'note' => mb_substr(trim((string) ($payload['action_note'] ?? 'บันทึกแบบร่าง ' . $type)), 0, 200),
+                'metadata_json' => $metadata,
+                'is_voided' => 0, 'created_by' => Auth::currentUser()['email'] ?? '',
+                'created_at' => Database::now(),
+            ]);
+            self::audit('recording_draft', 'match', $matchId, ['event_id' => $row['id'], 'scoring_type' => $type]);
+            $pdo->commit();
+            return ['match_id' => $matchId, 'scoring_type' => $type, 'created_at' => $row['created_at']];
+        } catch (Throwable $error) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $error;
+        }
+    }
+
     public static function saveMatchEvent(array $payload): array
     {
         Auth::canManageResults();
         $matchId = trim((string) ($payload['match_id'] ?? ''));
         $match = self::findById('matches', $matchId);
+        self::assertMatchResultAccess($match);
+        $requestId = trim((string) ($payload['request_id'] ?? ''));
+        if ($requestId !== '' && !preg_match('/^[A-Za-z0-9_-]{8,100}$/', $requestId)) {
+            throw new InvalidArgumentException('รหัสคำขอบันทึกเหตุการณ์ไม่ถูกต้อง');
+        }
+        if ($requestId !== '') {
+            $previous = self::fetchOne('SELECT match_id, event_id FROM match_event_requests WHERE request_id = :id', [':id' => $requestId]);
+            if ($previous) {
+                if ((string) $previous['match_id'] !== $matchId) throw new RuntimeException('รหัสคำขอถูกใช้กับแมตช์อื่นแล้ว');
+                return self::findById('match_events', (string) $previous['event_id']);
+            }
+        }
         Auth::assertSportScope((string) ($match['sport_id'] ?? ''));
         if ((string) ($match['status'] ?? '') !== 'live') {
             throw new RuntimeException('ต้องเริ่มการแข่งขันก่อนจึงจะบันทึกคะแนนหรือเหตุการณ์ได้');
@@ -1712,9 +1761,20 @@ final class AppService
         if (!$definition) {
             throw new InvalidArgumentException('เหตุการณ์นี้ไม่ได้เปิดใช้ในกติกาของกีฬา');
         }
+        $quickTeamScore = filter_var($payload['quick_team_score'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        $teamPointScoringTypes = ['SCORE', 'PERIOD_SCORE'];
+        if ($quickTeamScore && (!in_array((string) ($rule['scoring_type'] ?? ''), $teamPointScoringTypes, true) || (int) ($definition['points'] ?? 0) <= 0)) {
+            throw new InvalidArgumentException('กีฬาประเภทนี้ไม่รองรับปุ่มเพิ่มคะแนนทีม');
+        }
+        $quickAmounts = (array) ($rule['scoring_config_data']['quick_points'] ?? ((string) ($rule['scoring_type'] ?? '') === 'PERIOD_SCORE' ? [1, 2, 3] : [1]));
+        $quickAmounts = array_values(array_unique(array_map('intval', $quickAmounts)));
+        if ($quickTeamScore && (!in_array((int) ($payload['points'] ?? 1), $quickAmounts, true)
+            || count($quickAmounts) > 10 || array_filter($quickAmounts, static fn(int $amount): bool => $amount < 1 || $amount > 10))) {
+            throw new InvalidArgumentException('จำนวนแต้มจากปุ่มไม่ตรงกับกติกาของแมตช์');
+        }
         $teamId = self::nullableId($payload['team_id'] ?? null);
         $participant = (string) ($definition['participant'] ?? 'optional');
-        $points = array_key_exists('points', $payload) && $payload['points'] !== '' ? (int) $payload['points'] : (int) ($definition['points'] ?? 0);
+        $points = $quickTeamScore ? (int) ($payload['points'] ?? 1) : (array_key_exists('points', $payload) && $payload['points'] !== '' ? (int) $payload['points'] : (int) ($definition['points'] ?? 0));
         if (($participant === 'athlete' || $participant === 'team' || $points !== 0) && $teamId === null) {
             throw new InvalidArgumentException('กรุณาเลือกทีมของเหตุการณ์');
         }
@@ -1722,7 +1782,7 @@ final class AppService
             throw new InvalidArgumentException('ทีมไม่อยู่ในแมตช์นี้');
         }
         $studentId = self::nullableId($payload['student_id'] ?? null);
-        if ($participant === 'athlete' && $studentId === null) {
+        if ($participant === 'athlete' && $studentId === null && !$quickTeamScore) {
             throw new InvalidArgumentException('กรุณาเลือกนักกีฬาผู้ทำเหตุการณ์');
         }
         if ($studentId !== null && $teamId === null) {
@@ -1730,6 +1790,10 @@ final class AppService
         }
         if ($studentId !== null && $teamId !== null && !self::fetchOne('SELECT id FROM team_members WHERE team_id = :team_id AND student_id = :student_id', [':team_id' => $teamId, ':student_id' => $studentId])) {
             throw new InvalidArgumentException('นักกีฬาไม่อยู่ในทีมที่เลือก');
+        }
+        $metadata = self::payloadObject($payload['metadata'] ?? []);
+        if ($quickTeamScore) {
+            $metadata['quick_team_score'] = true;
         }
         $record = [
             'id' => self::nextId('match_events'),
@@ -1743,31 +1807,544 @@ final class AppService
             'points' => $points,
             'card_type' => str_contains($eventType, 'card') ? str_replace('_card', '', $eventType) : null,
             'note' => trim((string) ($payload['note'] ?? '')),
-            'metadata_json' => json_encode(self::payloadObject($payload['metadata'] ?? []), JSON_UNESCAPED_UNICODE),
+            'metadata_json' => json_encode($metadata, JSON_UNESCAPED_UNICODE),
             'is_voided' => 0,
             'created_by' => Auth::currentUser()['email'] ?? '',
             'created_at' => Database::now(),
         ];
-        $row = self::insertRow('match_events', $record);
-        self::syncMatchScoreFromEvents($matchId);
-        self::audit('create_event', 'match', $matchId, $row);
-        return $row;
+        $pdo = Database::pdo();
+        $pdo->beginTransaction();
+        try {
+            self::claimMatchActionRevision($matchId, (int) ($payload['expected_revision'] ?? $match['action_revision'] ?? 0));
+            $row = self::insertRow('match_events', $record);
+            if ($requestId !== '') {
+                $stmt = $pdo->prepare('INSERT INTO match_event_requests (request_id, match_id, event_id, created_at)
+                    VALUES (:request_id, :match_id, :event_id, :created_at)');
+                $stmt->execute([':request_id' => $requestId, ':match_id' => $matchId, ':event_id' => $row['id'], ':created_at' => Database::now()]);
+            }
+            self::syncMatchScoreFromEvents($matchId);
+            self::audit('create_event', 'match', $matchId, $row);
+            $pdo->commit();
+            return $row;
+        } catch (Throwable $error) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            if ($requestId !== '') {
+                $previous = self::fetchOne('SELECT match_id, event_id FROM match_event_requests WHERE request_id = :id', [':id' => $requestId]);
+                if ($previous && (string) $previous['match_id'] === $matchId) return self::findById('match_events', (string) $previous['event_id']);
+            }
+            throw $error;
+        }
     }
 
-    public static function voidMatchEvent(string $id): array
+    public static function updateMatchEvent(string $id, array $payload): array
     {
         Auth::canManageResults();
         $event = self::findById('match_events', $id);
         $match = self::findById('matches', (string) $event['match_id']);
+        self::assertMatchResultAccess($match);
         Auth::assertSportScope((string) ($match['sport_id'] ?? ''));
-        $row = self::updateRow('match_events', $id, [
-            'is_voided' => 1,
-            'voided_by' => Auth::currentUser()['email'] ?? '',
-            'voided_at' => Database::now(),
-        ]);
-        self::syncMatchScoreFromEvents((string) $event['match_id']);
-        self::audit('void_event', 'match', (string) $event['match_id'], $row);
+        if ((string) ($match['status'] ?? '') !== 'live') {
+            throw new RuntimeException('แก้ไขเหตุการณ์ได้เฉพาะแมตช์ที่กำลังแข่งขัน');
+        }
+        if ((int) ($event['is_voided'] ?? 0) === 1) {
+            throw new RuntimeException('เหตุการณ์นี้ถูกยกเลิกแล้ว ไม่สามารถแก้ไขได้');
+        }
+        $metadata = self::jsonObject((string) ($event['metadata_json'] ?? '{}'));
+        if (!empty($metadata['score_correction'])) {
+            throw new RuntimeException('รายการแก้คะแนนต้องจัดการผ่านเมนูแก้ไขคะแนนรวม');
+        }
+        $reason = trim((string) ($payload['edit_reason'] ?? ''));
+        if ($reason === '') {
+            throw new InvalidArgumentException('กรุณาระบุเหตุผลในการแก้ไขเหตุการณ์');
+        }
+        $rule = self::decodeSportRule(self::findById('sport_rule_versions', (string) $match['rule_version_id']));
+        $eventType = trim((string) ($payload['event_type'] ?? $event['event_type']));
+        $definition = null;
+        foreach ($rule['event_types_data'] as $candidate) {
+            if ((string) ($candidate['code'] ?? '') === $eventType) {
+                $definition = $candidate;
+                break;
+            }
+        }
+        if (!$definition) throw new InvalidArgumentException('เหตุการณ์นี้ไม่ได้เปิดใช้ในกติกาของกีฬา');
+
+        $teamId = self::nullableId($payload['team_id'] ?? $event['team_id']);
+        $studentId = self::nullableId($payload['student_id'] ?? $event['student_id']);
+        $participant = (string) ($definition['participant'] ?? 'optional');
+        $points = array_key_exists('points', $payload) && $payload['points'] !== ''
+            ? (int) $payload['points'] : (int) ($definition['points'] ?? 0);
+        if (($participant === 'athlete' || $participant === 'team' || $points !== 0) && $teamId === null) {
+            throw new InvalidArgumentException('กรุณาเลือกทีมของเหตุการณ์');
+        }
+        if ($teamId !== null && !in_array((string) $teamId, [(string) $match['team1_id'], (string) $match['team2_id']], true)) {
+            throw new InvalidArgumentException('ทีมไม่อยู่ในแมตช์นี้');
+        }
+        if ($participant === 'athlete' && $studentId === null && empty($metadata['quick_team_score'])) {
+            throw new InvalidArgumentException('กรุณาเลือกนักกีฬาของเหตุการณ์');
+        }
+        if ($studentId !== null && $teamId === null) throw new InvalidArgumentException('กรุณาเลือกทีมก่อนเลือกนักกีฬา');
+        if ($studentId !== null && $teamId !== null && !self::fetchOne(
+            'SELECT id FROM team_members WHERE team_id = :team_id AND student_id = :student_id',
+            [':team_id' => $teamId, ':student_id' => $studentId]
+        )) throw new InvalidArgumentException('นักกีฬาไม่อยู่ในทีมที่เลือก');
+
+        $metadata['edited'] = true;
+        $metadata['last_edit_reason'] = $reason;
+        $metadata['last_edited_by'] = Auth::currentUser()['email'] ?? '';
+        $metadata['last_edited_at'] = Database::now();
+        $patch = [
+            'event_type' => $eventType,
+            'team_id' => $teamId,
+            'student_id' => $studentId,
+            'period_number' => max(1, (int) ($payload['period_number'] ?? $event['period_number'] ?? 1)),
+            'elapsed_seconds' => max(0, (int) ($payload['elapsed_seconds'] ?? $event['elapsed_seconds'] ?? 0)),
+            'added_time' => max(0, (int) ($payload['added_time'] ?? $event['added_time'] ?? 0)),
+            'points' => $points,
+            'card_type' => str_contains($eventType, 'card') ? str_replace('_card', '', $eventType) : null,
+            'note' => trim((string) ($payload['note'] ?? '')),
+            'metadata_json' => json_encode($metadata, JSON_UNESCAPED_UNICODE),
+        ];
+        $pdo = Database::pdo();
+        $pdo->beginTransaction();
+        try {
+            self::claimMatchActionRevision((string) $event['match_id'], (int) ($payload['expected_revision'] ?? $match['action_revision'] ?? 0));
+            $row = self::updateRow('match_events', $id, $patch);
+            self::syncMatchScoreFromEvents((string) $event['match_id']);
+            self::audit('update_event', 'match', (string) $event['match_id'], [
+                'event_id' => $id, 'before' => $event, 'after' => $row, 'reason' => $reason,
+            ]);
+            $pdo->commit();
+            return $row;
+        } catch (Throwable $error) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $error;
+        }
+    }
+
+    public static function correctMatchTeamScore(array $payload): array
+    {
+        Auth::canManageResults();
+        $matchId = trim((string) ($payload['match_id'] ?? ''));
+        $match = self::findById('matches', $matchId);
+        self::assertMatchResultAccess($match);
+        if ((string) ($match['status'] ?? '') !== 'live') throw new RuntimeException('แก้คะแนนได้เฉพาะแมตช์ที่กำลังแข่งขัน');
+        $rule = self::decodeSportRule(self::findById('sport_rule_versions', (string) $match['rule_version_id']));
+        if (!in_array((string) ($rule['scoring_type'] ?? ''), ['SCORE', 'PERIOD_SCORE'], true)) {
+            throw new InvalidArgumentException('รูปแบบกีฬานี้ไม่รองรับการแก้คะแนนรวมด้วยวิธีนี้');
+        }
+        $teamId = trim((string) ($payload['team_id'] ?? ''));
+        $side = $teamId === (string) $match['team1_id'] ? 1 : ($teamId === (string) $match['team2_id'] ? 2 : 0);
+        if ($side === 0) throw new InvalidArgumentException('ทีมไม่อยู่ในแมตช์นี้');
+        $target = self::nullableInt($payload['target_score'] ?? null);
+        if ($target === null || $target < 0 || $target > 9999) throw new InvalidArgumentException('คะแนนใหม่ต้องอยู่ระหว่าง 0 ถึง 9999');
+        $reason = trim((string) ($payload['reason'] ?? ''));
+        if ($reason === '') throw new InvalidArgumentException('กรุณาระบุเหตุผลในการแก้คะแนน');
+        $current = (int) ($match['team' . $side . '_score'] ?? 0);
+        $eventTotal = (int) (self::fetchOne('SELECT COALESCE(SUM(points), 0) AS total FROM match_events
+            WHERE match_id = :match AND team_id = :team AND is_voided = 0', [':match' => $matchId, ':team' => $teamId])['total'] ?? 0);
+        if ($eventTotal !== $current) {
+            throw new RuntimeException('คะแนนปัจจุบันไม่ได้มาจากเหตุการณ์ในศูนย์แข่งขัน กรุณาตรวจสอบผลกับผู้ดูแลก่อนแก้');
+        }
+        $delta = $target - $current;
+        if ($delta === 0) return $match;
+        $definition = null;
+        foreach ($rule['event_types_data'] as $candidate) {
+            if ((int) ($candidate['points'] ?? 0) > 0) { $definition = $candidate; break; }
+        }
+        if (!$definition) throw new InvalidArgumentException('กติกาไม่มีเหตุการณ์ทำคะแนน');
+        $pdo = Database::pdo();
+        $pdo->beginTransaction();
+        try {
+            self::claimMatchActionRevision($matchId, (int) ($payload['expected_revision'] ?? $match['action_revision'] ?? 0));
+            $row = self::insertRow('match_events', [
+                'id' => self::nextId('match_events'), 'match_id' => $matchId,
+                'event_type' => $definition['code'], 'team_id' => $teamId, 'student_id' => null,
+                'period_number' => (int) ($match['current_period'] ?? 1), 'elapsed_seconds' => (int) ($match['clock_seconds'] ?? 0),
+                'added_time' => 0, 'points' => $delta, 'card_type' => null, 'note' => $reason,
+                'metadata_json' => json_encode(['score_correction' => true, 'from' => $current, 'to' => $target], JSON_UNESCAPED_UNICODE),
+                'is_voided' => 0, 'created_by' => Auth::currentUser()['email'] ?? '', 'created_at' => Database::now(),
+            ]);
+            self::syncMatchScoreFromEvents($matchId);
+            self::audit('correct_score', 'match', $matchId, ['event_id' => $row['id'], 'team_id' => $teamId,
+                'from' => $current, 'to' => $target, 'reason' => $reason]);
+            $pdo->commit();
+            return self::findById('matches', $matchId);
+        } catch (Throwable $error) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $error;
+        }
+    }
+
+    private static function claimMatchActionRevision(string $matchId, int $expected): void
+    {
+        $stmt = Database::pdo()->prepare('UPDATE matches SET action_revision = action_revision + 1
+            WHERE id = :id AND action_revision = :expected');
+        $stmt->execute([':id' => $matchId, ':expected' => $expected]);
+        if ($stmt->rowCount() !== 1) throw new RuntimeException('แมตช์มีข้อมูลใหม่แล้ว กรุณารีเฟรชก่อนบันทึกอีกครั้ง');
+    }
+
+    public static function voidMatchEvent(string $id, array $payload = []): array
+    {
+        Auth::canManageResults();
+        $event = self::findById('match_events', $id);
+        $match = self::findById('matches', (string) $event['match_id']);
+        self::assertMatchResultAccess($match);
+        if ((string) ($match['status'] ?? '') !== 'live') {
+            throw new RuntimeException('ไม่สามารถแก้เหตุการณ์ของแมตช์ที่ล็อกผลแล้ว');
+        }
+        if ((int) ($event['is_voided'] ?? 0) === 1) {
+            return $event;
+        }
+        Auth::assertSportScope((string) ($match['sport_id'] ?? ''));
+        $pdo = Database::pdo();
+        $pdo->beginTransaction();
+        try {
+            self::claimMatchActionRevision((string) $event['match_id'], (int) ($payload['expected_revision'] ?? $match['action_revision'] ?? 0));
+            $row = self::updateRow('match_events', $id, [
+                'is_voided' => 1,
+                'voided_by' => Auth::currentUser()['email'] ?? '',
+                'voided_at' => Database::now(),
+            ]);
+            self::syncMatchScoreFromEvents((string) $event['match_id']);
+            self::audit('void_event', 'match', (string) $event['match_id'], ['before' => $event, 'after' => $row]);
+            $pdo->commit();
+            return $row;
+        } catch (Throwable $error) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $error;
+        }
+    }
+
+    public static function deleteMatchResult(string $matchId, array $payload): array
+    {
+        Auth::canManageResults();
+        $match = self::findById('matches', $matchId);
+        self::assertMatchResultAccess($match);
+        Auth::assertSportScope((string) ($match['sport_id'] ?? ''));
+        $result = self::fetchOne('SELECT * FROM match_results WHERE match_id = :match_id LIMIT 1', [':match_id' => $matchId]);
+        if (!$result) throw new RuntimeException('แมตช์นี้ยังไม่มีผลการแข่งขันทางการให้ยกเลิก');
+        $expectedRevision = (int) ($payload['expected_revision'] ?? $result['revision_number'] ?? 0);
+        if ($expectedRevision !== (int) ($result['revision_number'] ?? 0)) {
+            throw new RuntimeException('ผลถูกแก้ไขโดยผู้ใช้อื่นแล้ว กรุณารีเฟรชก่อนยกเลิกผล');
+        }
+        $reason = trim((string) ($payload['reason'] ?? ''));
+        if ($reason === '') throw new InvalidArgumentException('กรุณาระบุเหตุผลในการยกเลิกผลการแข่งขัน');
+        $revisionHistory = self::fetchAll(
+            'SELECT revision_number, old_result, new_result, reason, updated_by, created_at
+             FROM match_result_revisions WHERE match_result_id = :id ORDER BY revision_number',
+            [':id' => (string) $result['id']]
+        );
+
+        $pdo = Database::pdo();
+        $pdo->beginTransaction();
+        try {
+            self::deleteRowsWhere('match_results', 'id = :id', [':id' => (string) $result['id']]);
+            self::updateRow('matches', $matchId, [
+                'status' => 'live',
+                'clock_status' => 'paused',
+                'winner_team_id' => null,
+                'confirmed_by' => null,
+                'confirmed_at' => null,
+                'action_revision' => (int) ($match['action_revision'] ?? 0) + 1,
+            ]);
+            self::syncMatchScoreFromEvents($matchId);
+            $row = self::findById('matches', $matchId);
+            self::recalculateStandings((string) $match['tournament_id']);
+            self::audit('result_delete', 'match', $matchId, [
+                'old_result' => self::decodeMatchResult($result), 'revision_history' => $revisionHistory,
+                'reason' => $reason, 'reopened_status' => 'live',
+            ]);
+            $pdo->commit();
+            return $row;
+        } catch (Throwable $error) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $error;
+        }
+    }
+
+    private static function assertRankingMatch(array $match): void
+    {
+        $rule = self::decodeSportRule(self::findById('sport_rule_versions', (string) $match['rule_version_id']));
+        if (!in_array(self::resolvedMatchScoringType($match, $rule), ['TIME', 'RACE_POSITION'], true)) {
+            throw new InvalidArgumentException('แมตช์นี้ไม่ใช่การแข่งขันแบบจัดอันดับด้วยเวลา');
+        }
+    }
+
+    private static function resolvedMatchScoringType(array $match, array $rule): string
+    {
+        $saved = self::fetchOne('SELECT scoring_type FROM match_results WHERE match_id = :id LIMIT 1', [':id' => $match['id']]);
+        if ($saved && in_array((string) $saved['scoring_type'], ScoringEngine::TYPES, true)) {
+            return (string) $saved['scoring_type'];
+        }
+        $sport = self::findById('sports', (string) $match['sport_id']);
+        return ScoringTypeDetector::detect($sport, $rule);
+    }
+
+    public static function matchEntries(string $matchId): array
+    {
+        Auth::canManageResults();
+        $match = self::findById('matches', $matchId);
+        self::assertMatchResultAccess($match);
+        self::assertRankingMatch($match);
+        return self::fetchAll('SELECT match_entries.*, departments.name AS department_name
+            FROM match_entries LEFT JOIN departments ON departments.code = match_entries.department_code
+            WHERE match_entries.match_id = :id ORDER BY COALESCE(lane_number, 999), id', [':id' => $matchId]);
+    }
+
+    public static function matchEntryCandidates(string $matchId): array
+    {
+        Auth::canManageResults();
+        $match = self::findById('matches', $matchId);
+        self::assertMatchResultAccess($match);
+        self::assertRankingMatch($match);
+        $teams = self::fetchAll('SELECT id, name, department_code FROM teams WHERE tournament_id = :tournament AND sport_id = :sport ORDER BY name',
+            [':tournament' => $match['tournament_id'], ':sport' => $match['sport_id']]);
+        $athletes = self::fetchAll('SELECT DISTINCT students.id, students.student_code, students.prefix, students.first_name, students.last_name,
+                students.department_code, teams.id AS team_id, teams.name AS team_name
+            FROM team_members JOIN teams ON teams.id = team_members.team_id
+            JOIN students ON students.id = team_members.student_id
+            WHERE teams.tournament_id = :tournament AND teams.sport_id = :sport ORDER BY students.first_name, students.id',
+            [':tournament' => $match['tournament_id'], ':sport' => $match['sport_id']]);
+        $department = trim((string) (Auth::currentUser()['department_code'] ?? ''));
+        if ($department !== '' && !in_array((string) (Auth::currentUser()['role'] ?? ''), [Auth::ROLE_SUPER_ADMIN, Auth::ROLE_ADMIN], true)) {
+            $teams = array_values(array_filter($teams, static fn(array $row): bool => (string) $row['department_code'] === $department));
+            $athletes = array_values(array_filter($athletes, static fn(array $row): bool => (string) $row['department_code'] === $department));
+        }
+        return ['teams' => $teams, 'athletes' => $athletes];
+    }
+
+    private static function assertEntryDepartmentScope(?string $departmentCode): void
+    {
+        $user = Auth::currentUser();
+        if (in_array((string) ($user['role'] ?? ''), [Auth::ROLE_SUPER_ADMIN, Auth::ROLE_ADMIN], true)) return;
+        $scope = trim((string) ($user['department_code'] ?? ''));
+        if ($scope !== '' && $scope !== (string) $departmentCode) {
+            throw new RuntimeException('ผู้เข้าแข่งขันอยู่นอกสังกัดที่คุณรับผิดชอบ');
+        }
+    }
+
+    public static function saveMatchEntry(array $payload): array
+    {
+        Auth::canManageResults();
+        $matchId = trim((string) ($payload['match_id'] ?? ''));
+        $match = self::findById('matches', $matchId);
+        self::assertMatchResultAccess($match);
+        self::assertRankingMatch($match);
+        if ((string) $match['status'] === 'completed') throw new RuntimeException('ผลได้รับการยืนยันแล้ว');
+        $type = strtolower(trim((string) ($payload['entry_type'] ?? 'athlete')));
+        if (!in_array($type, ['athlete', 'team', 'affiliation'], true)) throw new InvalidArgumentException('ประเภทผู้เข้าแข่งขันไม่ถูกต้อง');
+        $source = strtolower(trim((string) ($payload['source_type'] ?? 'manual')));
+        if (!in_array($source, ['manual', 'import', 'roster'], true)) throw new InvalidArgumentException('แหล่งข้อมูลไม่ถูกต้อง');
+        $studentId = self::nullableId($payload['student_id'] ?? null);
+        $teamId = self::nullableId($payload['team_id'] ?? null);
+        $department = trim((string) ($payload['department_code'] ?? ''));
+        $label = trim((string) ($payload['display_name'] ?? ''));
+        $members = self::payloadObject($payload['members'] ?? []);
+        if ($studentId !== null) {
+            if ($type !== 'athlete') throw new InvalidArgumentException('รหัสนักกีฬาใช้ได้เฉพาะผู้เข้าแข่งขันรายบุคคล');
+            $student = self::findById('students', (string) $studentId);
+            $department = (string) $student['department_code'];
+            $label = trim(implode(' ', array_filter([$student['prefix'] ?? '', $student['first_name'] ?? '', $student['last_name'] ?? ''])));
+            if (!self::fetchOne('SELECT team_members.id FROM team_members JOIN teams ON teams.id = team_members.team_id
+                WHERE team_members.student_id = :student AND teams.tournament_id = :tournament AND teams.sport_id = :sport LIMIT 1',
+                [':student' => $studentId, ':tournament' => $match['tournament_id'], ':sport' => $match['sport_id']])) {
+                throw new InvalidArgumentException('นักกีฬาไม่ได้ลงทะเบียนในรายการและกีฬาของแมตช์นี้');
+            }
+        }
+        if ($teamId !== null) {
+            $team = self::findById('teams', (string) $teamId);
+            if ((string) $team['tournament_id'] !== (string) $match['tournament_id'] || (string) $team['sport_id'] !== (string) $match['sport_id']) {
+                throw new InvalidArgumentException('ทีมไม่อยู่ในรายการและกีฬาของแมตช์นี้');
+            }
+            if ($department !== '' && $department !== (string) $team['department_code']) throw new InvalidArgumentException('นักกีฬาและทีมอยู่คนละสังกัด');
+            $department = (string) $team['department_code'];
+            if ($type === 'team') $label = (string) $team['name'];
+            if ($studentId !== null && !self::fetchOne('SELECT id FROM team_members WHERE team_id = :team AND student_id = :student',
+                [':team' => $teamId, ':student' => $studentId])) throw new InvalidArgumentException('นักกีฬาไม่ได้อยู่ในทีมที่เลือก');
+            if ($type === 'team') {
+                $members = self::fetchAll('SELECT students.id, students.prefix, students.first_name, students.last_name
+                    FROM team_members JOIN students ON students.id = team_members.student_id
+                    WHERE team_members.team_id = :team ORDER BY team_members.id', [':team' => $teamId]);
+            }
+        }
+        if ($type === 'team' && $teamId === null) throw new InvalidArgumentException('กรุณาเลือกทีมสำหรับวิ่งผลัด');
+        if ($type === 'affiliation') {
+            if ($department === '') throw new InvalidArgumentException('กรุณาเลือกสังกัด');
+            $affiliation = self::fetchOne('SELECT name FROM departments WHERE code = :code', [':code' => $department]);
+            if (!$affiliation) throw new InvalidArgumentException('ไม่พบสังกัด');
+            $label = (string) $affiliation['name'];
+            $studentId = null;
+            $teamId = null;
+        }
+        if ($department !== '' && !self::fetchOne('SELECT code FROM departments WHERE code = :code', [':code' => $department])) {
+            throw new InvalidArgumentException('ไม่พบสังกัด');
+        }
+        self::assertEntryDepartmentScope($department);
+        if ($label === '') throw new InvalidArgumentException('กรุณาระบุชื่อผู้เข้าแข่งขัน');
+        $lane = self::nullableInt($payload['lane_number'] ?? null);
+        if ($lane !== null && ($lane < 1 || $lane > 100)) throw new InvalidArgumentException('ลู่ต้องอยู่ระหว่าง 1 ถึง 100');
+        $currentId = trim((string) ($payload['id'] ?? ''));
+        if ($currentId !== '') {
+            $current = self::findById('match_entries', $currentId);
+            if ((string) $current['match_id'] !== $matchId) throw new InvalidArgumentException('ผู้เข้าแข่งขันไม่อยู่ในแมตช์นี้');
+            self::assertEntryDepartmentScope((string) ($current['department_code'] ?? ''));
+        }
+        foreach (self::fetchAll('SELECT id, lane_number, student_id, team_id, department_code, entry_type FROM match_entries WHERE match_id = :id', [':id' => $matchId]) as $entry) {
+            if ((string) $entry['id'] === $currentId) continue;
+            if ($lane !== null && (int) $entry['lane_number'] === $lane) throw new InvalidArgumentException('ลู่นี้มีผู้เข้าแข่งขันแล้ว');
+            if ($studentId !== null && (string) $entry['student_id'] === (string) $studentId) throw new InvalidArgumentException('นักกีฬาซ้ำในแมตช์');
+            if ($type === 'team' && $teamId !== null && (string) $entry['team_id'] === (string) $teamId && $entry['entry_type'] === 'team') throw new InvalidArgumentException('ทีมซ้ำในแมตช์');
+            if ($type === 'affiliation' && $entry['entry_type'] === 'affiliation' && (string) $entry['department_code'] === $department) throw new InvalidArgumentException('สังกัดซ้ำในแมตช์');
+        }
+        $record = ['match_id' => $matchId, 'entry_type' => $type, 'student_id' => $studentId, 'team_id' => $teamId,
+            'department_code' => $department ?: null, 'display_name' => $label, 'lane_number' => $lane,
+            'source_type' => $source, 'members_json' => json_encode($members, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+            'updated_at' => Database::now()];
+        if ($currentId !== '') {
+            $row = self::updateRow('match_entries', $currentId, $record);
+        } else {
+            $record['id'] = self::nextId('match_entries');
+            $record['created_at'] = Database::now();
+            $record['result_status'] = 'PENDING';
+            $record['points'] = 0;
+            $row = self::insertRow('match_entries', $record);
+        }
+        self::audit($currentId !== '' ? 'update_entry' : 'create_entry', 'match', $matchId, $row);
         return $row;
+    }
+
+    public static function importMatchEntries(array $payload): array
+    {
+        $rows = $payload['rows'] ?? [];
+        if (!is_array($rows) || !$rows || count($rows) > 200) throw new InvalidArgumentException('ข้อมูลนำเข้าต้องมี 1-200 แถว');
+        $saved = [];
+        $pdo = Database::pdo();
+        $pdo->beginTransaction();
+        try {
+            foreach ($rows as $row) {
+                if (!is_array($row)) throw new InvalidArgumentException('แถวนำเข้าไม่ถูกต้อง');
+                $saved[] = self::saveMatchEntry(array_replace($row, ['match_id' => $payload['match_id'] ?? '', 'source_type' => 'import']));
+            }
+            $pdo->commit();
+        } catch (Throwable $error) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $error;
+        }
+        return ['created' => count($saved), 'entries' => $saved];
+    }
+
+    public static function recordMatchEntryResult(array $payload): array
+    {
+        Auth::canManageResults();
+        $entry = self::findById('match_entries', (string) ($payload['id'] ?? ''));
+        $match = self::findById('matches', (string) $entry['match_id']);
+        self::assertMatchResultAccess($match);
+        self::assertRankingMatch($match);
+        self::assertEntryDepartmentScope((string) ($entry['department_code'] ?? ''));
+        if ((string) $match['status'] !== 'live') throw new RuntimeException('บันทึกผลได้เฉพาะแมตช์ที่กำลังแข่งขัน');
+        $status = strtoupper(trim((string) ($payload['status'] ?? 'FINISHED')));
+        if (!in_array($status, ['PENDING', 'FINISHED', 'DNS', 'DNF', 'DQ'], true)) throw new InvalidArgumentException('สถานะผลไม่ถูกต้อง');
+        $verified = self::nullableInt($payload['verified_time_ms'] ?? null);
+        $provisional = self::nullableInt($payload['provisional_time_ms'] ?? null);
+        if ($verified !== null && $verified <= 0) throw new InvalidArgumentException('เวลาที่ตรวจสอบแล้วต้องมากกว่า 0');
+        if ($provisional !== null && $provisional <= 0) throw new InvalidArgumentException('เวลาเบื้องต้นต้องมากกว่า 0');
+        if ($status === 'FINISHED' && $verified === null && $provisional === null) throw new InvalidArgumentException('กรุณาระบุเวลาเข้าเส้นชัย');
+        if ($status !== 'FINISHED') $verified = null;
+        $patch = ['result_status' => $status, 'verified_time_ms' => $verified, 'provisional_time_ms' => $provisional];
+        $expectedRevision = (int) ($payload['expected_revision'] ?? $entry['revision_number'] ?? 0);
+        if ($expectedRevision !== (int) ($entry['revision_number'] ?? 0)) {
+            throw new RuntimeException('ผลถูกแก้ไขโดยผู้ใช้อื่นแล้ว กรุณารีเฟรชก่อนบันทึกอีกครั้ง');
+        }
+        $reason = trim((string) ($payload['reason'] ?? ''));
+        $changed = (string) $entry['result_status'] !== $status || (string) ($entry['verified_time_ms'] ?? '') !== (string) ($verified ?? '')
+            || (string) ($entry['provisional_time_ms'] ?? '') !== (string) ($provisional ?? '');
+        if (!$changed) return $entry;
+        if ((string) $entry['result_status'] !== 'PENDING' && $reason === '') throw new InvalidArgumentException('กรุณาระบุเหตุผลในการแก้ผล');
+        $pdo = Database::pdo();
+        $pdo->beginTransaction();
+        try {
+            self::insertRow('match_entry_revisions', ['id' => self::nextId('match_entry_revisions'), 'entry_id' => $entry['id'],
+                'old_value' => json_encode($entry, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                'new_value' => json_encode($patch, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+                'reason' => $reason !== '' ? $reason : 'บันทึกผลครั้งแรก',
+                'updated_by' => Auth::currentUser()['email'] ?? '', 'created_at' => Database::now()]);
+            $update = $pdo->prepare('UPDATE match_entries SET result_status = :status, verified_time_ms = :verified,
+                provisional_time_ms = :provisional, revision_number = revision_number + 1, updated_at = :now
+                WHERE id = :id AND revision_number = :expected');
+            $update->execute([':status' => $status, ':verified' => $verified, ':provisional' => $provisional,
+                ':now' => Database::now(), ':id' => $entry['id'], ':expected' => $expectedRevision]);
+            if ($update->rowCount() !== 1) throw new RuntimeException('ผลถูกแก้ไขโดยผู้ใช้อื่นแล้ว กรุณารีเฟรชก่อนบันทึกอีกครั้ง');
+            $row = self::findById('match_entries', (string) $entry['id']);
+            self::rankMatchEntries((string) $match['id']);
+            self::audit('record_entry_result', 'match', (string) $match['id'], ['entry_id' => $entry['id'], 'old' => $entry, 'new' => $row, 'reason' => $reason]);
+            $pdo->commit();
+            return self::findById('match_entries', (string) $entry['id']);
+        } catch (Throwable $error) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $error;
+        }
+    }
+
+    private static function rankMatchEntries(string $matchId): void
+    {
+        $match = self::findById('matches', $matchId);
+        $rule = self::decodeSportRule(self::findById('sport_rule_versions', (string) $match['rule_version_id']));
+        $awards = $rule['scoring_config_data']['rank_points'] ?? [5, 3, 1];
+        if (!is_array($awards) || count($awards) > 100 || array_filter($awards, static fn($points): bool => !is_numeric($points) || (int) $points < 0)) {
+            throw new InvalidArgumentException('เกณฑ์คะแนนตามอันดับไม่ถูกต้อง');
+        }
+        $rows = self::fetchAll('SELECT id, result_status, verified_time_ms FROM match_entries WHERE match_id = :id
+            ORDER BY verified_time_ms, id', [':id' => $matchId]);
+        $times = [];
+        foreach ($rows as $row) {
+            if ($row['result_status'] === 'FINISHED' && $row['verified_time_ms'] !== null) $times[] = (int) $row['verified_time_ms'];
+        }
+        sort($times, SORT_NUMERIC);
+        $update = Database::pdo()->prepare('UPDATE match_entries SET rank_number = :rank, points = :points WHERE id = :id');
+        foreach ($rows as $row) {
+            $rank = $row['result_status'] === 'FINISHED' && $row['verified_time_ms'] !== null
+                ? array_search((int) $row['verified_time_ms'], $times, true) + 1 : null;
+            $update->execute([':rank' => $rank, ':points' => $rank !== null ? ($awards[$rank - 1] ?? 0) : 0, ':id' => $row['id']]);
+        }
+    }
+
+    public static function confirmMatchEntries(string $matchId): array
+    {
+        Auth::canManageResults();
+        $match = self::findById('matches', $matchId);
+        self::assertMatchResultAccess($match);
+        self::assertRankingMatch($match);
+        if ((string) $match['status'] !== 'live') throw new RuntimeException('ยืนยันผลได้เฉพาะแมตช์ที่กำลังแข่งขัน');
+        $entries = self::matchEntries($matchId);
+        if (count($entries) < 2) throw new InvalidArgumentException('ต้องมีผู้เข้าแข่งขันอย่างน้อย 2 ราย');
+        $user = Auth::currentUser();
+        $department = trim((string) ($user['department_code'] ?? ''));
+        if ($department !== '' && !in_array((string) ($user['role'] ?? ''), [Auth::ROLE_SUPER_ADMIN, Auth::ROLE_ADMIN], true)) {
+            foreach ($entries as $entry) {
+                if ((string) ($entry['department_code'] ?? '') !== $department) {
+                    throw new RuntimeException('ผลรวมมีผู้เข้าแข่งขันนอกสังกัดของคุณ ต้องให้เจ้าหน้าที่กลางหรือผู้ดูแลยืนยัน');
+                }
+            }
+        }
+        foreach ($entries as $entry) {
+            if ($entry['result_status'] === 'PENDING' || ($entry['result_status'] === 'FINISHED' && $entry['verified_time_ms'] === null)) {
+                throw new InvalidArgumentException('กรุณาตรวจสอบผลทุกคนก่อนยืนยัน');
+            }
+        }
+        $pdo = Database::pdo();
+        $pdo->beginTransaction();
+        try {
+            self::rankMatchEntries($matchId);
+            $winner = self::fetchOne('SELECT team_id FROM match_entries WHERE match_id = :id AND rank_number = 1 ORDER BY id LIMIT 1', [':id' => $matchId]);
+            $result = self::updateRow('matches', $matchId, ['status' => 'completed', 'clock_status' => 'stopped',
+                'winner_team_id' => $winner['team_id'] ?? null, 'confirmed_by' => Auth::currentUser()['email'] ?? '', 'confirmed_at' => Database::now()]);
+            self::audit('confirm_entry_results', 'match', $matchId, ['entries' => count($entries)]);
+            $pdo->commit();
+            return $result;
+        } catch (Throwable $error) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $error;
+        }
     }
 
     public static function listStandings(string $tournamentId): array
@@ -1890,22 +2467,41 @@ final class AppService
             'departments' => self::activeDepartments(),
             'sports' => self::fetchAll('SELECT * FROM sports WHERE is_active = 1 ORDER BY name ASC'),
             'staff_invites_enabled' => Auth::truthy(self::settings()['staff_invites_enabled']),
+            'invite_expiry_minutes' => (int) self::settings()['staff_invite_expiry_minutes'],
         ];
     }
 
     public static function setInvitesEnabled(array $payload): array
     {
         Auth::canManageUsers();
-        $enabled = Auth::truthy($payload['enabled'] ?? false) ? '1' : '0';
-        $key = 'staff_invites_enabled';
-        $column = Database::isMysql() ? '`key`' : 'key';
-        if (self::fetchOne("SELECT {$column} FROM settings WHERE {$column} = :key", [':key' => $key])) {
-            Database::pdo()->prepare("UPDATE settings SET value = :value WHERE {$column} = :key")->execute([':value' => $enabled, ':key' => $key]);
-        } else {
-            Database::pdo()->prepare("INSERT INTO settings ({$column}, value, note) VALUES (:key, :value, :note)")->execute([':key' => $key, ':value' => $enabled, ':note' => 'เปิดใช้ลิงก์คำเชิญทีมงาน']);
+        $settings = self::settings();
+        $enabled = Auth::truthy($payload['enabled'] ?? $settings['staff_invites_enabled']) ? '1' : '0';
+        $minutes = filter_var($payload['expiry_minutes'] ?? $settings['staff_invite_expiry_minutes'], FILTER_VALIDATE_INT);
+        if ($minutes === false || $minutes < 5 || $minutes > 1440) {
+            throw new InvalidArgumentException('อายุคำเชิญต้องเป็นจำนวนเต็มระหว่าง 5 ถึง 1,440 นาที');
         }
-        self::audit('toggle_staff_invites', 'settings', $key, ['enabled' => $enabled === '1']);
-        return ['enabled' => $enabled === '1'];
+        $column = Database::isMysql() ? '`key`' : 'key';
+        $values = [
+            'staff_invites_enabled' => [$enabled, 'เปิดใช้ลิงก์คำเชิญทีมงาน'],
+            'staff_invite_expiry_minutes' => [(string) $minutes, 'อายุคำเชิญใหม่ หน่วยนาที'],
+        ];
+        $pdo = Database::pdo();
+        $pdo->beginTransaction();
+        try {
+            foreach ($values as $key => [$value, $note]) {
+                if (self::fetchOne("SELECT {$column} FROM settings WHERE {$column} = :key", [':key' => $key])) {
+                    $pdo->prepare("UPDATE settings SET value = :value WHERE {$column} = :key")->execute([':value' => $value, ':key' => $key]);
+                } else {
+                    $pdo->prepare("INSERT INTO settings ({$column}, value, note) VALUES (:key, :value, :note)")->execute([':key' => $key, ':value' => $value, ':note' => $note]);
+                }
+            }
+            self::audit('toggle_staff_invites', 'settings', 'staff_invites_enabled', ['enabled' => $enabled === '1', 'expiry_minutes' => $minutes]);
+            $pdo->commit();
+        } catch (Throwable $error) {
+            $pdo->rollBack();
+            throw $error;
+        }
+        return ['enabled' => $enabled === '1', 'expiry_minutes' => $minutes];
     }
 
     public static function listAuditLogs(array $filters = []): array
@@ -1926,7 +2522,6 @@ final class AppService
             Auth::ROLE_SUPER_ADMIN,
             Auth::ROLE_ADMIN,
             Auth::ROLE_SPORT_HEAD,
-            Auth::ROLE_REGISTRATION_OFFICER,
             Auth::ROLE_RESULT_OFFICER,
             Auth::ROLE_PUBLIC_RELATIONS,
         ]);
@@ -1997,6 +2592,23 @@ final class AppService
         return self::enrichUsers([$row])[0];
     }
 
+    public static function setUserActiveStatus(array $payload): array
+    {
+        Auth::canManageUsers();
+        if (!array_key_exists('is_active', $payload)) {
+            throw new InvalidArgumentException('กรุณาระบุสถานะบัญชี');
+        }
+        $id = (string) ($payload['id'] ?? '');
+        self::findById('users', $id);
+        $enabled = Auth::truthy($payload['is_active']);
+        if (!$enabled && (string) (Auth::currentUser()['id'] ?? '') === $id) {
+            throw new RuntimeException('ไม่สามารถปิดใช้งานบัญชีของตัวเองได้');
+        }
+        $row = self::updateRow('users', $id, ['is_active' => $enabled ? 1 : 0]);
+        self::audit('update_user_status', 'users', $id, ['is_active' => $enabled]);
+        return self::enrichUsers([$row])[0];
+    }
+
     public static function createInvite(array $payload): array
     {
         Auth::canManageUsers();
@@ -2022,7 +2634,7 @@ final class AppService
             'invited_by' => Auth::currentUser()['email'] ?? '',
             'accepted_user_id' => null,
             'status' => 'pending',
-            'expires_at' => $now->modify('+45 minutes')->format('Y-m-d H:i:s'),
+            'expires_at' => $now->modify('+' . max(5, min(1440, (int) self::settings()['staff_invite_expiry_minutes'])) . ' minutes')->format('Y-m-d H:i:s'),
             'accepted_at' => null,
             'revoked_at' => null,
             'created_at' => $now->format('Y-m-d H:i:s'),
@@ -2146,7 +2758,6 @@ final class AppService
             Auth::ROLE_SUPER_ADMIN,
             Auth::ROLE_ADMIN,
             Auth::ROLE_SPORT_HEAD,
-            Auth::ROLE_REGISTRATION_OFFICER,
             Auth::ROLE_RESULT_OFFICER,
             Auth::ROLE_PUBLIC_RELATIONS,
         ]);
@@ -2265,32 +2876,6 @@ final class AppService
             'recommendations' => [
                 'นำเข้าข้อมูลนักกีฬาและรายชื่อนักกีฬาให้ครบก่อนวันแข่งขัน',
                 'ใช้ audit log เพื่อตรวจสอบการแก้ไขข้อมูลสำคัญ',
-            ],
-        ];
-    }
-
-    private static function localFormalReport(array $dataset): array
-    {
-        $base = self::localDashboardBrief($dataset);
-        $counts = $dataset['counts'];
-        $risks = $base['risks'] ?: ['ไม่พบประเด็นความเสี่ยงสำคัญจากข้อมูลที่มีอยู่ในระบบ ณ เวลาจัดทำรายงาน'];
-
-        return [
-            'summary' => 'จากการตรวจสอบข้อมูลในระบบบริหารจัดการแข่งขันกีฬา พบว่ามีกีฬาที่เปิดใช้งานจำนวน '
-                . $counts['activeSports'] . ' ประเภท มีทีมที่บันทึกในระบบจำนวน '
-                . $counts['teams'] . ' ทีม มีข้อมูลนักกีฬาจำนวน '
-                . $counts['students'] . ' คน และมีการแข่งขันที่บันทึกผลเสร็จสิ้นจำนวน '
-                . $counts['completedMatches'] . ' รายการ ทั้งนี้ ข้อมูลดังกล่าวควรใช้ประกอบการติดตามความพร้อมและการดำเนินงานของคณะกรรมการที่เกี่ยวข้อง',
-            'next_actions' => [
-                'ตรวจสอบสถานะรายการแข่งขันและทีมที่อยู่ระหว่างรอดำเนินการให้เป็นปัจจุบัน',
-                'ดำเนินการยืนยันรายชื่อทีมและนักกีฬาก่อนจัดทำหรือเผยแพร่ตารางการแข่งขัน',
-                'จัดทำข่าวประชาสัมพันธ์หรือประกาศผลการแข่งขันภายหลังการบันทึกผลอย่างเป็นทางการ',
-            ],
-            'risks' => $risks,
-            'recommendations' => [
-                'ควรกำหนดผู้รับผิดชอบตรวจสอบข้อมูลหลัก ได้แก่ รายชื่อนักกีฬา ทีม รายการแข่งขัน และผลการแข่งขัน ก่อนการเผยแพร่',
-                'ควรใช้ข้อมูลบันทึกกิจกรรมของระบบประกอบการตรวจสอบย้อนหลัง เพื่อให้การดำเนินงานมีความโปร่งใสและตรวจสอบได้',
-                'ควรจัดทำรอบเวลาการปรับปรุงข้อมูลอย่างสม่ำเสมอ เพื่อให้รายงานสำหรับผู้บริหารมีความถูกต้องและทันต่อสถานการณ์',
             ],
         ];
     }
@@ -2453,663 +3038,6 @@ final class AppService
         ];
     }
 
-    public static function reportOptions(): array
-    {
-        $user = Auth::canViewReports();
-        $categories = self::fetchAll('SELECT * FROM report_categories WHERE is_active = 1 ORDER BY display_order ASC, id ASC');
-        $templates = self::fetchAll('SELECT * FROM report_templates WHERE is_active = 1 ORDER BY category_id ASC, display_order ASC, id ASC');
-        foreach ($templates as &$template) {
-            $template['sections'] = self::jsonArray((string) ($template['sections_json'] ?? '[]'));
-        }
-        unset($template);
-        return [
-            'categories' => $categories,
-            'templates' => $templates,
-            'tournaments' => self::publicTournaments(),
-            'settings' => self::settings(),
-            'permissions' => [
-                'edit' => true,
-                'publish' => in_array($user['role'] ?? '', [Auth::ROLE_SUPER_ADMIN, Auth::ROLE_ADMIN], true),
-                'ai' => true,
-            ],
-        ];
-    }
-
-    public static function listReports(array $filters = []): array
-    {
-        Auth::canViewReports();
-        $where = [];
-        $params = [];
-        foreach ([
-            'category_id' => 'reports.category_id',
-            'template_id' => 'reports.template_id',
-            'academic_year' => 'reports.academic_year',
-            'status' => 'reports.status',
-        ] as $key => $column) {
-            $value = trim((string) ($filters[$key] ?? ''));
-            if ($value !== '') {
-                $where[] = "{$column} = :{$key}";
-                $params[":{$key}"] = $value;
-            }
-        }
-        $query = trim((string) ($filters['query'] ?? ''));
-        if ($query !== '') {
-            $where[] = '(reports.title LIKE :query OR reports.prepared_by LIKE :query OR reports.department LIKE :query)';
-            $params[':query'] = '%' . $query . '%';
-        }
-        $sql = 'SELECT reports.*, report_categories.name AS category_name, report_categories.code AS category_code,
-                       report_templates.name AS template_name, report_templates.code AS template_code,
-                       tournaments.name AS tournament_name
-                FROM reports
-                JOIN report_categories ON report_categories.id = reports.category_id
-                JOIN report_templates ON report_templates.id = reports.template_id
-                LEFT JOIN tournaments ON tournaments.id = reports.tournament_id'
-            . ($where ? ' WHERE ' . implode(' AND ', $where) : '')
-            . ' ORDER BY reports.updated_at DESC, reports.id DESC';
-        return array_map([self::class, 'enrichReportSummary'], self::fetchAll($sql, $params));
-    }
-
-    public static function getReport(string $id): array
-    {
-        Auth::canViewReports();
-        if ($id === '') {
-            throw new InvalidArgumentException('กรุณาระบุรายงาน');
-        }
-        $row = self::fetchOne(
-            'SELECT reports.*, report_categories.name AS category_name, report_categories.code AS category_code,
-                    report_templates.name AS template_name, report_templates.code AS template_code,
-                    report_templates.sections_json, tournaments.name AS tournament_name
-             FROM reports
-             JOIN report_categories ON report_categories.id = reports.category_id
-             JOIN report_templates ON report_templates.id = reports.template_id
-             LEFT JOIN tournaments ON tournaments.id = reports.tournament_id
-             WHERE reports.id = :id LIMIT 1',
-            [':id' => $id]
-        );
-        if (!$row) {
-            throw new RuntimeException('ไม่พบรายงานที่เลือก');
-        }
-        return self::enrichReport($row);
-    }
-
-    public static function saveReport(array $payload): array
-    {
-        $user = Auth::canEditReports();
-        $record = self::validateReportPayload($payload);
-        if ($record['status'] === 'published'
-            && !in_array($user['role'] ?? '', [Auth::ROLE_SUPER_ADMIN, Auth::ROLE_ADMIN], true)) {
-            throw new RuntimeException('เฉพาะผู้ดูแลระบบเท่านั้นที่เผยแพร่รายงานได้');
-        }
-        $id = trim((string) ($payload['id'] ?? ''));
-        $pdo = Database::pdo();
-        $pdo->beginTransaction();
-        try {
-            if ($id !== '') {
-                $existing = self::findById('reports', $id);
-                if ((string) ($existing['status'] ?? '') === 'published'
-                    && !in_array($user['role'] ?? '', [Auth::ROLE_SUPER_ADMIN, Auth::ROLE_ADMIN], true)) {
-                    throw new RuntimeException('รายงานที่เผยแพร่แล้วแก้ไขได้เฉพาะผู้ดูแลระบบ');
-                }
-                self::updateRow('reports', $id, $record);
-                self::deleteRowsWhere('report_kpis', 'report_id = :report_id', [':report_id' => $id]);
-                self::deleteRowsWhere('report_budgets', 'report_id = :report_id', [':report_id' => $id]);
-                $action = 'update';
-            } else {
-                $id = (string) self::nextId('reports');
-                $record['id'] = (int) $id;
-                $record['created_by'] = (string) ($user['email'] ?? '');
-                $record['created_at'] = Database::now();
-                $record['updated_at'] = Database::now();
-                self::insertRow('reports', $record);
-                $action = 'create';
-            }
-            self::saveReportKpis($id, self::payloadArray($payload['kpis'] ?? []));
-            self::saveReportBudget($id, self::payloadObject($payload['budget'] ?? []));
-            $pdo->commit();
-        } catch (Throwable $error) {
-            if ($pdo->inTransaction()) {
-                $pdo->rollBack();
-            }
-            throw $error;
-        }
-        self::audit($action, 'reports', $id, ['title' => $record['title'], 'status' => $record['status']]);
-        return self::getReport($id);
-    }
-
-    public static function updateReportStatus(string $id, string $status): array
-    {
-        $user = Auth::canEditReports();
-        if (!in_array($status, ['draft', 'review', 'completed', 'published'], true)) {
-            throw new InvalidArgumentException('สถานะรายงานไม่ถูกต้อง');
-        }
-        if ($status === 'published' && !in_array($user['role'] ?? '', [Auth::ROLE_SUPER_ADMIN, Auth::ROLE_ADMIN], true)) {
-            throw new RuntimeException('เฉพาะผู้ดูแลระบบเท่านั้นที่เผยแพร่รายงานได้');
-        }
-        $patch = ['status' => $status, 'published_at' => $status === 'published' ? Database::now() : null];
-        self::updateRow('reports', $id, $patch);
-        self::audit('status', 'reports', $id, ['status' => $status]);
-        return self::getReport($id);
-    }
-
-    public static function deleteReport(string $id): array
-    {
-        Auth::canPublishReports();
-        $row = self::deleteRow('reports', $id);
-        self::audit('delete', 'reports', $id, ['title' => $row['title'] ?? '']);
-        return $row;
-    }
-
-    public static function exportStoredReport(string $id): array
-    {
-        Auth::canViewReports();
-        $report = self::getReport($id);
-        $dir = PUBLIC_PATH . DIRECTORY_SEPARATOR . 'reports';
-        if (!is_dir($dir)) {
-            mkdir($dir, 0775, true);
-        }
-        $base = 'rmutt-sport-report-' . $id . '-' . date('Ymd-His');
-        $html = self::storedReportHtml($report);
-        $htmlPath = $dir . DIRECTORY_SEPARATOR . $base . '.html';
-        $docPath = $dir . DIRECTORY_SEPARATOR . $base . '.doc';
-        $jsonPath = $dir . DIRECTORY_SEPARATOR . $base . '.json';
-        file_put_contents($htmlPath, $html);
-        file_put_contents($docPath, $html);
-        file_put_contents($jsonPath, json_encode($report, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT));
-        self::audit('export', 'reports', $id, ['file' => $base]);
-        return [
-            'report_url' => app_url('public/reports/' . basename($htmlPath)),
-            'word_url' => app_url('public/reports/' . basename($docPath)),
-            'document_url' => app_url('public/reports/' . basename($jsonPath)),
-            'pdf_filename' => $base . '.pdf',
-        ];
-    }
-
-    public static function uploadReportAttachment(array $payload, array $files): array
-    {
-        Auth::canEditReports();
-        $reportId = trim((string) ($payload['report_id'] ?? ''));
-        self::findById('reports', $reportId);
-        $dataUrl = (string) ($payload['data_url'] ?? '');
-        $fileName = trim((string) ($payload['file_name'] ?? 'เอกสารประกอบ'));
-        $bytes = null;
-        $mime = '';
-        if ($dataUrl !== '' && preg_match('/^data:([a-zA-Z0-9.+\/-]+);base64,(.+)$/s', $dataUrl, $match)) {
-            $mime = strtolower($match[1]);
-            $bytes = base64_decode($match[2], true);
-        } elseif (!empty($files['file']['tmp_name'])) {
-            $mime = strtolower((string) mime_content_type($files['file']['tmp_name']));
-            $bytes = file_get_contents($files['file']['tmp_name']);
-            $fileName = (string) $files['file']['name'];
-        }
-        $extensions = [
-            'image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp',
-            'application/pdf' => 'pdf', 'application/msword' => 'doc',
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document' => 'docx',
-        ];
-        if ($bytes === false || $bytes === null || !isset($extensions[$mime])) {
-            throw new InvalidArgumentException('รองรับไฟล์ JPG, PNG, WEBP, PDF, DOC และ DOCX เท่านั้น');
-        }
-        if (strlen($bytes) > 8 * 1024 * 1024) {
-            throw new InvalidArgumentException('ไฟล์แนบต้องมีขนาดไม่เกิน 8MB');
-        }
-        $dir = UPLOAD_PATH . DIRECTORY_SEPARATOR . 'reports';
-        if (!is_dir($dir)) {
-            mkdir($dir, 0775, true);
-        }
-        $safe = self::slugify(pathinfo($fileName, PATHINFO_FILENAME)) ?: 'report-file';
-        $name = $safe . '-' . time() . '-' . bin2hex(random_bytes(3)) . '.' . $extensions[$mime];
-        file_put_contents($dir . DIRECTORY_SEPARATOR . $name, $bytes);
-        $row = self::insertRow('report_attachments', [
-            'id' => self::nextId('report_attachments'),
-            'report_id' => (int) $reportId,
-            'file_name' => $fileName,
-            'file_url' => app_url('public/uploads/reports/' . $name),
-            'file_type' => $mime,
-            'file_size' => strlen($bytes),
-            'note' => trim((string) ($payload['note'] ?? '')),
-            'created_at' => Database::now(),
-        ]);
-        self::audit('upload_attachment', 'reports', $reportId, ['name' => $fileName, 'type' => $mime]);
-        return $row;
-    }
-
-    public static function generateReportFormDraft(array $payload): array
-    {
-        Auth::canEditReports();
-        $categoryId = (int) ($payload['category_id'] ?? 0);
-        $templateId = (int) ($payload['template_id'] ?? 0);
-        $category = self::fetchOne('SELECT * FROM report_categories WHERE id = :id AND is_active = 1', [':id' => $categoryId]);
-        $template = self::fetchOne('SELECT * FROM report_templates WHERE id = :id AND category_id = :category_id AND is_active = 1', [
-            ':id' => $templateId,
-            ':category_id' => $categoryId,
-        ]);
-        if (!$category || !$template) {
-            throw new InvalidArgumentException('ไม่พบรูปแบบรายงานมาตรฐานที่กำหนด');
-        }
-
-        $current = self::reportDraftBase($payload, $category, $template);
-        $draft = self::localReportFormDraft($current);
-
-        self::audit('summarize', 'reports', (string) ($payload['id'] ?? ''), [
-            'category' => $category['code'] ?? '',
-            'template' => $template['code'] ?? '',
-            'source' => 'system-data',
-        ]);
-
-        return [
-            'draft' => $draft,
-            'provider' => 'system-data',
-            'model' => 'automatic-summary',
-            'generated_at' => Database::now(),
-            'category' => $category,
-            'template' => $template,
-        ];
-    }
-
-    private static function reportDraftBase(array $payload, array $category, array $template): array
-    {
-        $tournamentId = self::nullableId($payload['tournament_id'] ?? null);
-        return [
-            'category' => [
-                'code' => (string) ($category['code'] ?? ''),
-                'name' => (string) ($category['name'] ?? ''),
-                'description' => (string) ($category['description'] ?? ''),
-            ],
-            'template' => [
-                'code' => (string) ($template['code'] ?? ''),
-                'name' => (string) ($template['name'] ?? ''),
-                'description' => (string) ($template['description'] ?? ''),
-                'sections' => self::jsonArray((string) ($template['sections_json'] ?? '[]')),
-            ],
-            'current' => [
-                'title' => trim((string) ($payload['title'] ?? '')),
-                'academic_year' => trim((string) ($payload['academic_year'] ?? '')),
-                'fiscal_year' => trim((string) ($payload['fiscal_year'] ?? '')),
-                'semester' => trim((string) ($payload['semester'] ?? '')),
-                'start_date' => trim((string) ($payload['start_date'] ?? '')),
-                'end_date' => trim((string) ($payload['end_date'] ?? '')),
-                'department' => trim((string) ($payload['department'] ?? '')),
-                'responsible_person' => trim((string) ($payload['responsible_person'] ?? '')),
-                'prepared_by' => trim((string) ($payload['prepared_by'] ?? '')),
-                'report_date' => trim((string) ($payload['report_date'] ?? date('Y-m-d'))),
-                'executive_summary' => trim((string) ($payload['executive_summary'] ?? '')),
-                'instruction' => trim((string) ($payload['instruction'] ?? '')),
-                'general' => self::payloadObject($payload['general'] ?? []),
-                'performance' => self::payloadObject($payload['performance'] ?? []),
-                'outcomes' => self::payloadObject($payload['outcomes'] ?? []),
-                'problems' => self::payloadObject($payload['problems'] ?? []),
-                'kpis' => self::payloadArray($payload['kpis'] ?? []),
-                'budget' => self::payloadObject($payload['budget'] ?? []),
-            ],
-            'sports_data' => self::reportSportsData($tournamentId),
-        ];
-    }
-
-    private static function reportFormDraftPrompt(array $base, array $fallback): string
-    {
-        return "จัดทำร่างข้อความสำหรับกรอกแบบฟอร์มรายงานประชาสัมพันธ์ด้านกีฬา โดยยึดหมวดหมู่และแบบฟอร์มที่เลือก ใช้ภาษาไทยแบบทางการ กระชับ ชัดเจน เหมาะสำหรับรายงานการแข่งขันกีฬา และอ้างอิงเฉพาะข้อมูลกีฬาที่มีในระบบเท่านั้น\n"
-            . "ให้เติมข้อมูลตาม section ที่มีใน template เท่านั้น ห้ามแต่งผลการแข่งขัน ตัวเลข หรือชื่อทีมที่ไม่มีในข้อมูล\n"
-            . "หากข้อมูลจริงไม่เพียงพอ ให้เขียนเชิงรายงานสถานะอย่างสุภาพ และใส่ข้อเสนอแนะให้เจ้าหน้าที่ตรวจสอบเพิ่มเติม\n"
-            . "JSON schema ที่ต้องตอบกลับ:\n"
-            . '{"title":"","general":{"project_name":"","rationale":"","objectives":"","target_group":"","location":"","operation_date":""},"performance":{"operation_detail":""},"outcomes":{"performance_result":"","benefits":"","participant_impact":""},"problems":{"obstacles":"","solutions":"","recommendations":""},"executive_summary":"","kpis":[{"name":"","unit":"","target":0,"actual":0,"calculation_type":"percentage","achievement":0,"status":""}],"budget":{"allocated":0,"actual":0,"note":""}}' . "\n\n"
-            . "ข้อมูลปัจจุบันและข้อมูลกีฬา:\n"
-            . json_encode($base, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT)
-            . "\n\nร่างสำรองสำหรับเทียบเคียง:\n"
-            . json_encode($fallback, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
-    }
-
-    private static function localReportFormDraft(array $base): array
-    {
-        $current = $base['current'];
-        $sports = $base['sports_data'];
-        $summary = $sports['summary'] ?? [];
-        $categoryName = (string) ($base['category']['name'] ?? 'รายงานประชาสัมพันธ์กีฬา');
-        $templateName = (string) ($base['template']['name'] ?? 'รายงาน');
-        $title = (string) ($current['title'] ?: ('รายงานสรุปผลการดำเนินงานด้านกีฬา'
-            . (!empty($current['academic_year']) ? ' ประจำปี/รุ่น ' . $current['academic_year'] : '')));
-        $competition = (string) (($current['general']['competition_name'] ?? '') ?: ($current['general']['project_name'] ?? '') ?: $title);
-        $sportsList = self::joinThaiList(array_slice($sports['sports'] ?? [], 0, 8));
-        $departmentsList = self::joinThaiList(array_slice($sports['departments'] ?? [], 0, 8));
-        $completed = (int) ($summary['completed_matches'] ?? 0);
-        $matches = (int) ($summary['competitions'] ?? 0);
-        $athletes = (int) ($summary['athletes'] ?? 0);
-        $teams = (int) ($summary['teams'] ?? 0);
-        $scope = 'มีข้อมูลทีมเข้าร่วม ' . $teams . ' ทีม นักกีฬา ' . $athletes . ' คน และรายการแข่งขัน ' . $matches . ' รายการ';
-        if ($sportsList !== '') {
-            $scope .= ' ครอบคลุมกีฬา ' . $sportsList;
-        }
-        if ($departmentsList !== '') {
-            $scope .= ' จากหน่วยงาน/สาขา ' . $departmentsList;
-        }
-
-        $resultLines = [];
-        foreach (array_slice($sports['matches'] ?? [], 0, 6) as $match) {
-            $label = trim((string) (($match['team1_name'] ?? '-') . ' ' . ($match['score_label'] ?? '') . ' ' . ($match['team2_name'] ?? '-')));
-            $resultLines[] = ($match['sport_name'] ?? 'กีฬา') . ': ' . $label;
-        }
-        $resultText = $resultLines
-            ? "ผลการแข่งขันที่บันทึกในระบบ ได้แก่ " . implode(' | ', $resultLines)
-            : "ยังไม่มีผลการแข่งขันที่บันทึกครบถ้วนในระบบ จึงควรตรวจสอบและยืนยันข้อมูลก่อนเผยแพร่ประชาสัมพันธ์";
-
-        return [
-            'title' => $title,
-            'general' => [
-                'project_name' => $competition,
-                'rationale' => 'งานประชาสัมพันธ์ด้านกีฬาจัดทำขึ้นเพื่อรวบรวมและเผยแพร่ข้อมูลการแข่งขัน กิจกรรม ผลงานนักกีฬา และภาพรวมการมีส่วนร่วมของผู้ที่เกี่ยวข้อง ให้มีความถูกต้อง เป็นระบบ และเหมาะสมต่อการสื่อสารกับผู้ชมและทีมงาน',
-                'objectives' => "1. เพื่อสรุปข้อมูล{$categoryName}ให้เป็นเอกสารทางการ\n2. เพื่อใช้ประกอบการเผยแพร่ข่าวสารกีฬาและการรายงานต่อผู้บริหาร\n3. เพื่อสนับสนุนการติดตามผลการแข่งขันและการพัฒนางานประชาสัมพันธ์กีฬา",
-                'target_group' => 'ผู้จัดการแข่งขัน เจ้าหน้าที่ประชาสัมพันธ์ ผู้ควบคุมทีม นักกีฬา ผู้ชม และผู้มีส่วนเกี่ยวข้อง',
-                'location' => (string) ($current['general']['location'] ?? ''),
-                'operation_date' => (string) (($current['general']['operation_date'] ?? '') ?: ($current['start_date'] ?? '')),
-            ],
-            'performance' => [
-                'operation_detail' => "การดำเนินงาน{$categoryName} ดำเนินการโดยรวบรวมข้อมูลจากระบบจัดการกีฬา ตรวจสอบรายการแข่งขัน ทีม นักกีฬา และผลการแข่งขันที่เกี่ยวข้อง จากนั้นเรียบเรียงเป็นรายงานประชาสัมพันธ์ในรูปแบบทางการ โดย{$scope} และมีการแข่งขันที่บันทึกผลแล้ว {$completed} รายการ",
-            ],
-            'outcomes' => [
-                'performance_result' => $resultText,
-                'benefits' => 'หน่วยงานสามารถนำข้อมูลไปใช้ประกอบการเผยแพร่ข่าวสาร สรุปผลการดำเนินงาน จัดทำเอกสารเสนอผู้บริหาร และเก็บเป็นหลักฐานอ้างอิงสำหรับการจัดกิจกรรมกีฬาครั้งต่อไป',
-                'participant_impact' => 'ผู้เข้าร่วมและนักกีฬาได้รับการนำเสนอผลงานอย่างเป็นระบบ ช่วยสร้างการรับรู้ ความภาคภูมิใจ และส่งเสริมภาพลักษณ์ที่ดีของรายการแข่งขัน',
-            ],
-            'problems' => [
-                'obstacles' => 'ข้อมูลบางส่วนอาจยังไม่สมบูรณ์ เช่น ผลการแข่งขัน รายชื่อทีม หรือรายละเอียดผู้เข้าร่วม จึงจำเป็นต้องตรวจสอบกับผู้รับผิดชอบก่อนเผยแพร่',
-                'solutions' => 'กำหนดผู้รับผิดชอบตรวจทานข้อมูลแต่ละส่วน และบันทึกผลการแข่งขันให้ครบถ้วนก่อนจัดทำรายงานฉบับสมบูรณ์',
-                'recommendations' => 'ควรจัดทำแนวทางการบันทึกข้อมูลและรอบเวลาการส่งข้อมูลประชาสัมพันธ์กีฬา เพื่อให้รายงานมีความถูกต้อง ทันเวลา และนำไปใช้เผยแพร่ได้อย่างต่อเนื่อง',
-            ],
-            'executive_summary' => "{$templateName}ฉบับนี้จัดทำขึ้นเพื่อสรุปสาระสำคัญของงานประชาสัมพันธ์ด้านกีฬา โดย{$scope} มีผลการแข่งขันที่บันทึกแล้ว {$completed} รายการ ข้อมูลดังกล่าวสามารถใช้ประกอบการเผยแพร่ข่าวสาร การรายงานผลต่อผู้บริหาร และการพัฒนาการดำเนินงานประชาสัมพันธ์กีฬาให้มีความเป็นระบบยิ่งขึ้น",
-            'kpis' => [
-                ['name' => 'ความครบถ้วนของข้อมูลประชาสัมพันธ์กีฬา', 'unit' => 'ร้อยละ', 'target' => 100, 'actual' => $matches > 0 ? round(($completed / $matches) * 100, 2) : 0, 'calculation_type' => 'manual', 'achievement' => $matches > 0 ? round(($completed / $matches) * 100, 2) : 0, 'status' => $completed >= $matches && $matches > 0 ? 'บรรลุเป้าหมาย' : 'อยู่ระหว่างดำเนินการ'],
-                ['name' => 'จำนวนรายการแข่งขันที่ใช้ประกอบการสื่อสาร', 'unit' => 'รายการ', 'target' => $matches, 'actual' => $completed, 'calculation_type' => 'percentage', 'achievement' => 0, 'status' => 'อ้างอิงจากข้อมูลในระบบ'],
-            ],
-            'budget' => [
-                'allocated' => (float) ($current['budget']['allocated'] ?? 0),
-                'actual' => (float) ($current['budget']['actual'] ?? 0),
-                'note' => (string) (($current['budget']['note'] ?? '') ?: 'กรุณาตรวจสอบรายละเอียดงบประมาณจากเอกสารการเงินหรือผู้รับผิดชอบก่อนเผยแพร่รายงาน'),
-            ],
-        ];
-    }
-
-    private static function normalizeReportFormDraft(array $draft, array $fallback): array
-    {
-        foreach (['general', 'performance', 'outcomes', 'problems', 'budget'] as $group) {
-            $draft[$group] = self::payloadObject($draft[$group] ?? []);
-            $fallback[$group] = self::payloadObject($fallback[$group] ?? []);
-            $draft[$group] = array_merge($fallback[$group], array_filter($draft[$group], static fn($value): bool => $value !== null && $value !== ''));
-        }
-        $draft['title'] = trim((string) ($draft['title'] ?? '')) ?: $fallback['title'];
-        $draft['executive_summary'] = trim((string) ($draft['executive_summary'] ?? '')) ?: $fallback['executive_summary'];
-        $kpis = self::payloadArray($draft['kpis'] ?? []);
-        $draft['kpis'] = $kpis ?: ($fallback['kpis'] ?? []);
-        return $draft;
-    }
-
-    private static function decodeAiJsonObject(string $text): array
-    {
-        $clean = trim($text);
-        $clean = preg_replace('/^```(?:json)?\s*/i', '', $clean) ?? $clean;
-        $clean = preg_replace('/\s*```$/', '', $clean) ?? $clean;
-        $decoded = json_decode($clean, true);
-        if (is_array($decoded)) {
-            return $decoded;
-        }
-        if (preg_match('/\{.*\}/s', $text, $match)) {
-            $decoded = json_decode($match[0], true);
-            if (is_array($decoded)) {
-                return $decoded;
-            }
-        }
-        return [];
-    }
-
-    private static function joinThaiList(array $items): string
-    {
-        $items = array_values(array_filter(array_map(static fn($value): string => trim((string) $value), $items)));
-        if (!$items) {
-            return '';
-        }
-        if (count($items) === 1) {
-            return $items[0];
-        }
-        $last = array_pop($items);
-        return implode(', ', $items) . ' และ' . $last;
-    }
-
-    private static function validateReportPayload(array $payload): array
-    {
-        $title = trim((string) ($payload['title'] ?? ''));
-        $categoryId = (int) ($payload['category_id'] ?? 0);
-        $templateId = (int) ($payload['template_id'] ?? 0);
-        if ($title === '' || mb_strlen($title) > 255) {
-            throw new InvalidArgumentException('กรุณาระบุชื่อรายงานไม่เกิน 255 ตัวอักษร');
-        }
-        $category = self::fetchOne('SELECT * FROM report_categories WHERE id = :id AND is_active = 1', [':id' => $categoryId]);
-        $template = self::fetchOne('SELECT * FROM report_templates WHERE id = :id AND category_id = :category_id AND is_active = 1', [
-            ':id' => $templateId,
-            ':category_id' => $categoryId,
-        ]);
-        if (!$category || !$template) {
-            throw new InvalidArgumentException('หมวดหมู่หรือประเภทแบบฟอร์มไม่ถูกต้อง');
-        }
-        $startDate = trim((string) ($payload['start_date'] ?? ''));
-        $endDate = trim((string) ($payload['end_date'] ?? ''));
-        if ($startDate !== '' && $endDate !== '' && $startDate > $endDate) {
-            throw new InvalidArgumentException('วันที่สิ้นสุดต้องไม่น้อยกว่าวันที่เริ่มต้น');
-        }
-        $status = (string) ($payload['status'] ?? 'draft');
-        if (!in_array($status, ['draft', 'review', 'completed', 'published'], true)) {
-            throw new InvalidArgumentException('สถานะรายงานไม่ถูกต้อง');
-        }
-        $general = self::payloadObject($payload['general'] ?? []);
-        $performance = self::payloadObject($payload['performance'] ?? []);
-        $outcomes = self::payloadObject($payload['outcomes'] ?? []);
-        $problems = self::payloadObject($payload['problems'] ?? []);
-        return [
-            'title' => $title,
-            'category_id' => $categoryId,
-            'template_id' => $templateId,
-            'tournament_id' => self::nullableId($payload['tournament_id'] ?? null),
-            'academic_year' => trim((string) ($payload['academic_year'] ?? '')),
-            'fiscal_year' => trim((string) ($payload['fiscal_year'] ?? '')),
-            'semester' => trim((string) ($payload['semester'] ?? '')),
-            'start_date' => $startDate ?: null,
-            'end_date' => $endDate ?: null,
-            'department' => trim((string) ($payload['department'] ?? '')),
-            'responsible_person' => trim((string) ($payload['responsible_person'] ?? '')),
-            'prepared_by' => trim((string) ($payload['prepared_by'] ?? '')),
-            'report_date' => trim((string) ($payload['report_date'] ?? date('Y-m-d'))),
-            'status' => $status,
-            'general_json' => json_encode($general, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-            'performance_json' => json_encode($performance, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-            'outcomes_json' => json_encode($outcomes, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-            'problems_json' => json_encode($problems, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
-            'executive_summary' => trim((string) ($payload['executive_summary'] ?? '')),
-            'published_at' => $status === 'published' ? Database::now() : null,
-        ];
-    }
-
-    private static function saveReportKpis(string $reportId, array $items): void
-    {
-        foreach (array_values($items) as $index => $item) {
-            if (!is_array($item)) {
-                continue;
-            }
-            $name = trim((string) ($item['name'] ?? ''));
-            if ($name === '') {
-                continue;
-            }
-            $target = self::nonNegativeNumber($item['target'] ?? $item['target_value'] ?? 0, 'ค่าเป้าหมาย KPI');
-            $actual = self::nonNegativeNumber($item['actual'] ?? $item['actual_value'] ?? 0, 'ผลการดำเนินงาน KPI');
-            $type = (string) ($item['calculation_type'] ?? 'percentage');
-            if (!in_array($type, ['percentage', 'manual'], true)) {
-                $type = 'percentage';
-            }
-            $achievement = $type === 'percentage'
-                ? ($target > 0 ? round(($actual / $target) * 100, 2) : 0)
-                : self::nonNegativeNumber($item['achievement'] ?? 0, 'ร้อยละความสำเร็จ KPI');
-            $status = trim((string) ($item['status'] ?? ''));
-            if ($status === '') {
-                $status = $type === 'percentage' && $target <= 0 ? 'ไม่ใช้สูตร' : ($achievement >= 100 ? 'บรรลุเป้าหมาย' : 'อยู่ระหว่างดำเนินการ');
-            }
-            self::insertRow('report_kpis', [
-                'id' => self::nextId('report_kpis'),
-                'report_id' => (int) $reportId,
-                'name' => $name,
-                'unit' => trim((string) ($item['unit'] ?? '')),
-                'target_value' => $target,
-                'actual_value' => $actual,
-                'calculation_type' => $type,
-                'achievement' => $achievement,
-                'status' => $status,
-                'display_order' => $index,
-            ]);
-        }
-    }
-
-    private static function saveReportBudget(string $reportId, array $budget): void
-    {
-        $allocated = self::nonNegativeNumber($budget['allocated'] ?? 0, 'งบประมาณที่ได้รับ');
-        $actual = self::nonNegativeNumber($budget['actual'] ?? 0, 'งบประมาณที่ใช้จริง');
-        $remaining = round($allocated - $actual, 2);
-        $usage = $allocated > 0 ? round(($actual / $allocated) * 100, 2) : 0;
-        self::insertRow('report_budgets', [
-            'id' => self::nextId('report_budgets'),
-            'report_id' => (int) $reportId,
-            'allocated' => $allocated,
-            'actual' => $actual,
-            'remaining' => $remaining,
-            'usage_percentage' => $usage,
-            'note' => trim((string) ($budget['note'] ?? '')),
-        ]);
-    }
-
-    private static function enrichReportSummary(array $row): array
-    {
-        $row['status_label'] = self::reportStatusLabel((string) ($row['status'] ?? ''));
-        $row['report_date_label'] = (string) ($row['report_date'] ?: $row['created_at'] ?? '');
-        return $row;
-    }
-
-    private static function enrichReport(array $row): array
-    {
-        $row = self::enrichReportSummary($row);
-        $row['sections'] = self::jsonArray((string) ($row['sections_json'] ?? '[]'));
-        $row['general'] = self::jsonObject((string) ($row['general_json'] ?? '{}'));
-        $row['performance'] = self::jsonObject((string) ($row['performance_json'] ?? '{}'));
-        $row['outcomes'] = self::jsonObject((string) ($row['outcomes_json'] ?? '{}'));
-        $row['problems'] = self::jsonObject((string) ($row['problems_json'] ?? '{}'));
-        $row['kpis'] = self::fetchAll('SELECT * FROM report_kpis WHERE report_id = :id ORDER BY display_order ASC, id ASC', [':id' => $row['id']]);
-        $row['budget'] = self::fetchOne('SELECT * FROM report_budgets WHERE report_id = :id LIMIT 1', [':id' => $row['id']])
-            ?: ['allocated' => 0, 'actual' => 0, 'remaining' => 0, 'usage_percentage' => 0, 'note' => ''];
-        $row['attachments'] = self::fetchAll('SELECT * FROM report_attachments WHERE report_id = :id ORDER BY id DESC', [':id' => $row['id']]);
-        $row['sports_data'] = self::reportSportsData(self::nullableId($row['tournament_id'] ?? null));
-        return $row;
-    }
-
-    private static function reportSportsData(?int $tournamentId): array
-    {
-        $teams = array_values(array_filter(self::joinedTeams(), fn(array $row): bool => $tournamentId === null || (int) ($row['tournament_id'] ?? 0) === $tournamentId));
-        $matches = array_values(array_filter(self::joinedMatches(), fn(array $row): bool => $tournamentId === null || (int) ($row['tournament_id'] ?? 0) === $tournamentId));
-        $teamIds = array_map(fn(array $row): string => (string) $row['id'], $teams);
-        $members = array_values(array_filter(self::joinedTeamMembers(''), fn(array $row): bool => in_array((string) ($row['team_id'] ?? ''), $teamIds, true)));
-        $sports = array_values(array_unique(array_filter(array_map(fn(array $row): string => (string) ($row['sport_name'] ?? ''), $teams))));
-        $departments = array_values(array_unique(array_filter(array_map(fn(array $row): string => (string) ($row['department_name'] ?? ''), $teams))));
-        $studentIds = array_values(array_unique(array_filter(array_map(fn(array $row): string => (string) ($row['student_id'] ?? ''), $members))));
-        $completed = array_values(array_filter($matches, fn(array $row): bool => (string) ($row['status'] ?? '') === 'completed'));
-        $wins = [];
-        foreach ($completed as $match) {
-            $winner = '';
-            if (!empty($match['winner_team_id'])) {
-                $winner = (string) $match['winner_team_id'] === (string) ($match['team1_id'] ?? '')
-                    ? (string) ($match['team1_name'] ?? '')
-                    : (string) ($match['team2_name'] ?? '');
-            }
-            if ($winner !== '') {
-                $wins[$winner] = ($wins[$winner] ?? 0) + 1;
-            }
-        }
-        arsort($wins);
-
-        $sportBreakdown = [];
-        foreach ($sports as $sportName) {
-            $sportTeams = array_values(array_filter($teams, fn(array $row): bool => (string) ($row['sport_name'] ?? '') === $sportName));
-            $sportTeamIds = array_map(fn(array $row): string => (string) $row['id'], $sportTeams);
-            $sportMembers = array_values(array_filter($members, fn(array $row): bool => in_array((string) ($row['team_id'] ?? ''), $sportTeamIds, true)));
-            $sportMatches = array_values(array_filter($matches, fn(array $row): bool => (string) ($row['sport_name'] ?? '') === $sportName));
-            $sportBreakdown[] = [
-                'name' => $sportName,
-                'teams' => count($sportTeams),
-                'athletes' => count(array_unique(array_filter(array_map(fn(array $row): string => (string) ($row['student_id'] ?? ''), $sportMembers)))),
-                'matches' => count($sportMatches),
-                'completed_matches' => count(array_filter($sportMatches, fn(array $row): bool => (string) ($row['status'] ?? '') === 'completed')),
-            ];
-        }
-
-        $departmentBreakdown = [];
-        foreach ($departments as $departmentName) {
-            $departmentTeams = array_values(array_filter($teams, fn(array $row): bool => (string) ($row['department_name'] ?? '') === $departmentName));
-            $departmentTeamIds = array_map(fn(array $row): string => (string) $row['id'], $departmentTeams);
-            $departmentMembers = array_values(array_filter($members, fn(array $row): bool => in_array((string) ($row['team_id'] ?? ''), $departmentTeamIds, true)));
-            $departmentBreakdown[] = [
-                'name' => $departmentName,
-                'teams' => count($departmentTeams),
-                'athletes' => count(array_unique(array_filter(array_map(fn(array $row): string => (string) ($row['student_id'] ?? ''), $departmentMembers)))),
-            ];
-        }
-
-        $standingParams = [];
-        $standingWhere = '';
-        if ($tournamentId !== null) {
-            $standingWhere = ' WHERE standings.tournament_id = :tournament_id';
-            $standingParams[':tournament_id'] = $tournamentId;
-        }
-        $standings = self::fetchAll(
-            'SELECT standings.*, teams.name AS team_name, sports.name AS sport_name,
-                    departments.name AS department_name, tournaments.name AS tournament_name
-             FROM standings
-             JOIN teams ON teams.id = standings.team_id
-             LEFT JOIN sports ON sports.id = teams.sport_id
-             LEFT JOIN departments ON departments.code = teams.department_code
-             LEFT JOIN tournaments ON tournaments.id = standings.tournament_id'
-             . $standingWhere
-             . ' ORDER BY tournaments.name, sports.name, standings.rank_number, teams.name LIMIT 200',
-            $standingParams
-        );
-
-        $newsRows = self::fetchAll("SELECT status, news_type FROM news");
-        return [
-            'summary' => [
-                'sports' => count($sports),
-                'competitions' => count($matches),
-                'departments' => count($departments),
-                'athletes' => count($studentIds),
-                'personnel' => 0,
-                'participants' => count($studentIds),
-                'completed_matches' => count($completed),
-                'teams' => count($teams),
-            ],
-            'sports' => $sports,
-            'departments' => $departments,
-            'matches' => $matches,
-            'result_summary' => array_map(fn(string $name, int $count): array => ['name' => $name, 'wins' => $count], array_keys($wins), array_values($wins)),
-            'sport_breakdown' => $sportBreakdown,
-            'department_breakdown' => $departmentBreakdown,
-            'standings' => $standings,
-            'communications' => [
-                'news_total' => count($newsRows),
-                'news_published' => count(array_filter($newsRows, fn(array $row): bool => (string) ($row['status'] ?? '') === 'published')),
-                'hall_of_fame' => count(array_filter($newsRows, fn(array $row): bool => (string) ($row['news_type'] ?? '') === 'hall_of_fame' && (string) ($row['status'] ?? '') === 'published')),
-            ],
-        ];
-    }
-
-    private static function reportStatusLabel(string $status): string
-    {
-        return [
-            'draft' => 'แบบร่าง',
-            'review' => 'รอตรวจสอบ',
-            'completed' => 'เสร็จสมบูรณ์',
-            'published' => 'เผยแพร่แล้ว',
-        ][$status] ?? $status;
-    }
-
     private static function payloadObject($value): array
     {
         if (is_array($value)) {
@@ -3151,79 +3079,6 @@ final class AppService
             throw new InvalidArgumentException($label . 'ต้องเป็นตัวเลขตั้งแต่ 0 ขึ้นไป');
         }
         return round((float) $value, 2);
-    }
-
-    public static function generateFormalReport(array $payload): array
-    {
-        Auth::canManageMasterData();
-        $dataset = self::aiDataset('report');
-        $dataset['report_type'] = (string) ($payload['report_type'] ?? 'executive');
-        $dataset['output_type'] = (string) ($payload['output_type'] ?? 'both');
-        $dataset['instruction'] = trim((string) ($payload['instruction'] ?? ''));
-        $title = 'รายงานระบบกีฬา ' . $dataset['report_type'] . ' ' . date('Ymd-His');
-        $analysis = self::localFormalReport($dataset);
-        $client = self::aiClient();
-        $provider = 'local-summary';
-        if ($client->isConfigured()) {
-            try {
-                $text = $client->generateText(
-                    self::thaiSportsSystemInstruction(),
-                    self::aiPrompt('report', $dataset, $dataset['instruction']),
-                    ['temperature' => 0.25, 'max_output_tokens' => 2400]
-                );
-                $analysis = self::structuredAiResult($text, $analysis, $client->model(), 'google-gemini');
-                $provider = 'google-gemini';
-            } catch (Throwable $error) {
-                self::audit('ai_fallback', 'ai', 'report', ['error' => $error->getMessage(), 'model' => $client->model()]);
-                $analysis['fallback_reason'] = $error->getMessage();
-            }
-        }
-        $result = [
-            'title' => $title,
-            'report_type' => $dataset['report_type'],
-            'report_type_label' => self::reportTypeLabel((string) $dataset['report_type']),
-            'executive_summary' => $analysis['summary'],
-            'analysis' => $analysis['next_actions'],
-            'recommendations' => $analysis['recommendations'],
-            'risks' => $analysis['risks'] ?? [],
-            'metrics' => $dataset['summary'],
-            'created_at' => date(DATE_ATOM),
-            'created_at_label' => Database::now(),
-            'generated_by' => Auth::currentUser()['name'] ?? Auth::currentUser()['email'] ?? '',
-            'model' => $analysis['model'] ?? $client->model(),
-            'provider' => $provider,
-        ];
-
-        $dir = PUBLIC_PATH . DIRECTORY_SEPARATOR . 'reports';
-        if (!is_dir($dir)) {
-            mkdir($dir, 0775, true);
-        }
-        $base = 'report-' . date('Ymd-His') . '-' . bin2hex(random_bytes(3));
-        $jsonPath = $dir . DIRECTORY_SEPARATOR . $base . '.json';
-        file_put_contents($jsonPath, json_encode(['result' => $result, 'dataset' => $dataset], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT));
-        $csvPath = $dir . DIRECTORY_SEPARATOR . $base . '.csv';
-        $fh = fopen($csvPath, 'wb');
-        fputcsv($fh, ['metric', 'value']);
-        foreach ($dataset['summary'] as $key => $value) {
-            fputcsv($fh, [$key, $value]);
-        }
-        fclose($fh);
-        $html = self::formalReportHtml($result);
-        $htmlPath = $dir . DIRECTORY_SEPARATOR . $base . '.html';
-        file_put_contents($htmlPath, $html);
-        $docPath = $dir . DIRECTORY_SEPARATOR . $base . '.doc';
-        file_put_contents($docPath, $html);
-
-        $result['report_url'] = app_url('public/reports/' . basename($htmlPath));
-        $result['report_id'] = basename($htmlPath);
-        $result['word_url'] = app_url('public/reports/' . basename($docPath));
-        $result['word_id'] = basename($docPath);
-        $result['document_url'] = app_url('public/reports/' . basename($jsonPath));
-        $result['document_id'] = basename($jsonPath);
-        $result['sheet_url'] = app_url('public/reports/' . basename($csvPath));
-        $result['sheet_id'] = basename($csvPath);
-        self::audit('generate_formal_report', 'reports', '', ['report_type' => $dataset['report_type'], 'document_id' => $result['document_id'], 'sheet_id' => $result['sheet_id']]);
-        return $result;
     }
 
     private static function aiClient(): GeminiClient
@@ -3274,17 +3129,6 @@ final class AppService
         if ($task === 'news') {
             return "สร้างร่างข่าวประชาสัมพันธ์ภาษาไทยจาก selected_match โดยทำตาม news_request ทั้งรูปแบบข่าว โทน และประเด็นเน้น ใช้ข้อเท็จจริงจากข้อมูลเท่านั้น เนื้อหาควรพร้อมเผยแพร่และแบ่งย่อหน้าอ่านง่าย\n{$extra}ตอบกลับเป็น JSON เท่านั้น รูปแบบ {\"title\":\"...\",\"excerpt\":\"...\",\"body\":\"...\",\"banner_title\":\"ข้อความสั้นสำหรับแบนเนอร์\",\"banner_subtitle\":\"ชื่อรายการหรือรายละเอียดสั้น\"}\nDataset:\n{$json}";
         }
-        if ($task === 'report') {
-            return "จัดทำสรุปผลรายงานเชิงราชการภาษาไทยจากข้อมูลระบบกีฬา สำหรับเสนอผู้บริหารหรือคณะกรรมการดำเนินงาน โดยใช้ถ้อยคำสุภาพ เป็นทางการ กระชับ ชัดเจน และยึดข้อมูลจากชุดข้อมูลเท่านั้น
-ข้อกำหนดด้านภาษา:
-- ใช้สำนวนเอกสารราชการ เช่น “จากการตรวจสอบข้อมูลพบว่า”, “มีผลการดำเนินงาน”, “ควรดำเนินการ”, “เพื่อให้การดำเนินงานเป็นไปด้วยความเรียบร้อย”
-- หลีกเลี่ยงภาษาพูด คำโฆษณา ถ้อยคำเกินจริง เครื่องหมายอัศเจรีย์ และการคาดเดาที่ไม่มีข้อมูลรองรับ
-- summary ให้เป็นย่อหน้าเดียวในรูปแบบสรุปเพื่อรายงานผู้บริหาร ไม่ใช้ bullet
-- next_actions ให้เป็นรายการข้อดำเนินการถัดไปในเชิงราชการ ขึ้นต้นด้วยคำกริยาทางการ เช่น “ตรวจสอบ”, “ดำเนินการ”, “ประสานงาน”, “จัดทำ”, “เสนอ”
-- risks ให้ระบุเป็นประเด็นความเสี่ยงหรือข้อควรพิจารณาอย่างเป็นกลาง
-- recommendations ให้เป็นข้อเสนอแนะเชิงปฏิบัติที่เหมาะกับหน่วยงานการศึกษา
-{$extra}ตอบกลับเป็น JSON เท่านั้น รูปแบบ {\"summary\":\"...\",\"next_actions\":[\"...\"],\"risks\":[\"...\"],\"recommendations\":[\"...\"]}\nDataset:\n{$json}";
-        }
         if ($task === 'system') {
             return "สรุปภาพรวมระบบ อัปเดตความคืบหน้า และชี้ทางการดำเนินงานถัดไปจากข้อมูลปัจจุบัน\n{$extra}ตอบกลับเป็น JSON เท่านั้น รูปแบบ {\"summary\":\"...\",\"next_actions\":[\"...\"],\"risks\":[\"...\"],\"recommendations\":[\"...\"]}\nDataset:\n{$json}";
         }
@@ -3333,293 +3177,6 @@ final class AppService
         }
         $text = trim((string) $value);
         return $text === '' ? [] : [$text];
-    }
-
-    private static function storedReportHtml(array $report): string
-    {
-        $e = static fn($value): string => htmlspecialchars((string) ($value ?? ''), ENT_QUOTES, 'UTF-8');
-        $p = static fn($value): string => trim((string) $value) !== ''
-            ? '<p>' . nl2br($e($value)) . '</p>'
-            : '<p class="muted">ไม่มีข้อมูลที่บันทึกในระบบ</p>';
-        $sportsData = $report['sports_data'] ?? [];
-        $summary = $sportsData['summary'] ?? [];
-        $general = $report['general'] ?? [];
-        $outcomes = $report['outcomes'] ?? [];
-        $problems = $report['problems'] ?? [];
-        $communications = $sportsData['communications'] ?? [];
-        $logo = app_url('public/assets/sports/general.svg');
-
-        $metricLabels = [
-            'sports' => 'ชนิดกีฬา',
-            'teams' => 'ทีม',
-            'athletes' => 'นักกีฬา',
-            'departments' => 'หน่วยงาน',
-            'competitions' => 'แมตช์ทั้งหมด',
-            'completed_matches' => 'แมตช์เสร็จสิ้น',
-        ];
-        $metricCards = '';
-        foreach ($metricLabels as $key => $label) {
-            $metricCards .= '<div><strong>' . $e($summary[$key] ?? 0) . '</strong><span>' . $e($label) . '</span></div>';
-        }
-
-        $sportRows = '';
-        foreach ($sportsData['sport_breakdown'] ?? [] as $index => $row) {
-            $sportRows .= '<tr><td class="center">' . ($index + 1) . '</td><td>' . $e($row['name']) . '</td><td class="number">' . $e($row['teams']) . '</td><td class="number">' . $e($row['athletes']) . '</td><td class="number">' . $e($row['matches']) . '</td><td class="number">' . $e($row['completed_matches']) . '</td></tr>';
-        }
-
-        $departmentRows = '';
-        foreach ($sportsData['department_breakdown'] ?? [] as $index => $row) {
-            $departmentRows .= '<tr><td class="center">' . ($index + 1) . '</td><td>' . $e($row['name']) . '</td><td class="number">' . $e($row['teams']) . '</td><td class="number">' . $e($row['athletes']) . '</td></tr>';
-        }
-
-        $resultRows = '';
-        foreach ($sportsData['matches'] ?? [] as $index => $match) {
-            $winner = '-';
-            if (!empty($match['winner_team_id'])) {
-                $winner = (string) $match['winner_team_id'] === (string) ($match['team1_id'] ?? '')
-                    ? (string) ($match['team1_name'] ?? '-')
-                    : (string) ($match['team2_name'] ?? '-');
-            }
-            $resultRows .= '<tr><td class="center">' . ($index + 1) . '</td><td>' . $e($match['sport_name'] ?? '-') . '</td><td>' . $e($match['round_name'] ?? '-') . '</td><td>' . $e(($match['team1_name'] ?? '-') . ' พบ ' . ($match['team2_name'] ?? '-')) . '</td><td class="center">' . $e($match['score_label'] ?? '-') . '</td><td>' . $e($winner) . '</td></tr>';
-        }
-
-        $standingRows = '';
-        foreach ($sportsData['standings'] ?? [] as $index => $row) {
-            $standingRows .= '<tr><td class="center">' . $e($row['rank_number'] ?? ($index + 1)) . '</td><td>' . $e($row['sport_name'] ?? '-') . '</td><td>' . $e($row['team_name'] ?? '-') . '</td><td>' . $e($row['department_name'] ?? '-') . '</td><td class="number">' . $e($row['played'] ?? 0) . '</td><td class="number">' . $e($row['won'] ?? 0) . '</td><td class="number">' . $e($row['drawn'] ?? 0) . '</td><td class="number">' . $e($row['lost'] ?? 0) . '</td><td class="number">' . $e($row['points'] ?? 0) . '</td></tr>';
-        }
-
-        $kpiRows = '';
-        foreach ($report['kpis'] ?? [] as $index => $kpi) {
-            $kpiRows .= '<tr><td class="center">' . ($index + 1) . '</td><td>' . $e($kpi['name'] ?? '-') . '</td><td>' . $e($kpi['unit'] ?? '-') . '</td><td class="number">' . $e($kpi['target_value'] ?? 0) . '</td><td class="number">' . $e($kpi['actual_value'] ?? 0) . '</td><td class="number">' . $e($kpi['achievement'] ?? 0) . '%</td><td>' . $e($kpi['status'] ?? '-') . '</td></tr>';
-        }
-
-        $attachments = '';
-        foreach ($report['attachments'] ?? [] as $index => $file) {
-            $attachments .= '<li>' . ($index + 1) . '. ' . $e($file['file_name'] ?? '-') . ($file['note'] ? ' - ' . $e($file['note']) : '') . '</li>';
-        }
-
-        $reportScope = $report['tournament_name'] ?: 'ข้อมูลการแข่งขันทั้งหมดในระบบ';
-        $period = ($report['start_date'] ?: '-') . ' ถึง ' . ($report['end_date'] ?: '-');
-        $budget = $report['budget'] ?? [];
-
-        return '<!doctype html><html lang="th"><head><meta charset="utf-8"><title>' . $e($report['title']) . '</title>
-<style>
-@font-face{font-family:Sarabun;src:url("../assets/sarabun-regular.ttf")}@font-face{font-family:Sarabun;src:url("../assets/sarabun-bold.ttf");font-weight:700}
-@page{size:A4;margin:16mm 15mm 18mm}*{box-sizing:border-box}html,body{margin:0;padding:0}body{background:#e9edf2;color:#1f2937;font:14px/1.68 Sarabun,"TH Sarabun New",sans-serif}
-main{width:210mm;margin:18px auto;background:#fff;box-shadow:0 14px 42px #0f172a22;padding:18mm 16mm}.cover{min-height:255mm;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;page-break-after:always}.cover img{width:45mm;max-height:32mm;object-fit:contain;margin-bottom:18mm}.cover .institution{font-size:17px}.cover h1{font-size:28px;line-height:1.45;margin:13mm 0 4mm;color:#123c37}.cover h2{border:0;margin:0;font-size:19px;color:#374151}.cover .scope{margin-top:15mm;font-size:16px}.cover .prepared{margin-top:auto;width:100%;border-top:1px solid #9ca3af;padding-top:8mm}
-.book-page{page-break-before:always}.book-page:first-of-type{page-break-before:auto}h2{font-size:19px;color:#123c37;border-bottom:2px solid #16675f;margin:0 0 10px;padding-bottom:5px}h3{font-size:16px;margin:16px 0 7px;color:#244b47}p{margin:0 0 10px;text-align:justify}.muted{color:#6b7280}.meta,table{width:100%;border-collapse:collapse;margin:8px 0 14px;font-size:12px}.meta th{width:22%}th,td{border:1px solid #aeb8c4;padding:6px 7px;vertical-align:top}th{background:#eef4f3;font-weight:700;text-align:left}.center{text-align:center}.number{text-align:right}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:14px 0}.metrics div{border:1px solid #9fb5b2;background:#f4f8f7;padding:10px;text-align:center}.metrics strong{display:block;font-size:22px;color:#0f5f57}.metrics span{font-size:11px;color:#4b5563}.summary-box{border-left:5px solid #16675f;background:#f4f8f7;padding:12px 14px;margin:12px 0}.avoid-break,table,tr,.signature{break-inside:avoid;page-break-inside:avoid}.toc{list-style:none;padding:0}.toc li{display:flex;border-bottom:1px dotted #9ca3af;padding:7px 0}.toc span:last-child{margin-left:auto}.signature{display:grid;grid-template-columns:1fr 1fr;gap:28px;margin-top:30mm;text-align:center}.signature div{padding-top:20px}ol.attachments{padding-left:0;list-style:none}.report-footer{margin-top:20px;padding-top:8px;border-top:1px solid #9ca3af;text-align:center;color:#6b7280;font-size:11px}
-@media print{body{background:#fff}main{width:auto;margin:0;padding:0;box-shadow:none}.cover{min-height:260mm}}
-</style></head><body><main>
-<section class="cover"><img src="' . $e($logo) . '" alt="โลโก้การแข่งขัน"><div class="institution">SPORT TOURNAMENT</div><h1>' . $e($report['title']) . '</h1><h2>รายงานสรุปผลจากระบบบริหารจัดการแข่งขันกีฬา</h2><div class="scope">ปี/รุ่น ' . $e($report['academic_year'] ?: '-') . '<br>' . $e($reportScope) . '</div><div class="prepared">จัดทำโดย ' . $e($report['prepared_by'] ?: '-') . '<br>วันที่จัดทำ ' . $e($report['report_date'] ?: $report['created_at']) . '</div></section>
-<section class="book-page"><h2>ข้อมูลเอกสาร</h2><table class="meta"><tbody><tr><th>ชื่อรายงาน</th><td colspan="3">' . $e($report['title']) . '</td></tr><tr><th>ขอบเขตข้อมูล</th><td colspan="3">' . $e($reportScope) . '</td></tr><tr><th>ปี/รุ่น</th><td>' . $e($report['academic_year'] ?: '-') . '</td><th>ปีงบประมาณ</th><td>' . $e($report['fiscal_year'] ?: '-') . '</td></tr><tr><th>ช่วงข้อมูล</th><td>' . $e($period) . '</td><th>สถานะ</th><td>' . $e($report['status_label']) . '</td></tr><tr><th>หน่วยงาน</th><td>' . $e($report['department'] ?: '-') . '</td><th>ผู้รับผิดชอบ</th><td>' . $e($report['responsible_person'] ?: '-') . '</td></tr><tr><th>ผู้จัดทำ</th><td>' . $e($report['prepared_by'] ?: '-') . '</td><th>แหล่งข้อมูล</th><td>ระบบ SPORT TOURNAMENT</td></tr></tbody></table><h2>สารบัญ</h2><ol class="toc"><li><span>บทสรุปผู้บริหาร</span><span>1</span></li><li><span>1. ภาพรวมผลการดำเนินงาน</span><span>2</span></li><li><span>2. การมีส่วนร่วมจำแนกตามกีฬาและหน่วยงาน</span><span>3</span></li><li><span>3. ผลการแข่งขันและตารางคะแนน</span><span>4</span></li><li><span>4. ตัวชี้วัด งบประมาณ และการสื่อสาร</span><span>5</span></li><li><span>5. ผลลัพธ์ ปัญหา และข้อเสนอแนะ</span><span>6</span></li></ol></section>
-<section class="book-page"><h2>บทสรุปผู้บริหาร</h2><div class="summary-box">' . $p($report['executive_summary'] ?? '') . '</div><div class="metrics">' . $metricCards . '</div><h3>ขอบเขตและที่มาของข้อมูล</h3><p>รายงานฉบับนี้ประมวลผลจากข้อมูลกีฬา ทีม นักกีฬา ตารางแข่งขัน ผลการแข่งขัน ตารางคะแนน และข่าวประชาสัมพันธ์ที่บันทึกอยู่ในระบบ SPORT TOURNAMENT ณ วันที่จัดทำรายงาน โดยใช้ข้อมูลในขอบเขต ' . $e($reportScope) . '</p></section>
-<section class="book-page"><h2>1. ภาพรวมผลการดำเนินงาน</h2><h3>1.1 ข้อมูลทั่วไป</h3><table class="meta"><tbody><tr><th>โครงการ/กิจกรรม</th><td>' . $e($general['project_name'] ?? $report['title']) . '</td></tr><tr><th>การแข่งขัน</th><td>' . $e($general['competition_name'] ?? $reportScope) . '</td></tr><tr><th>วันที่ดำเนินการ</th><td>' . $e($general['operation_date'] ?? '-') . '</td></tr><tr><th>สถานที่</th><td>' . $e($general['location'] ?? '-') . '</td></tr></tbody></table><h3>1.2 หลักการและเหตุผล</h3>' . $p($general['rationale'] ?? '') . '<h3>1.3 วัตถุประสงค์</h3>' . $p($general['objectives'] ?? '') . '<h3>1.4 กลุ่มเป้าหมาย</h3>' . $p($general['target_group'] ?? '') . '<h3>1.5 รายละเอียดการดำเนินงาน</h3>' . $p($report['performance']['operation_detail'] ?? '') . '</section>
-<section class="book-page"><h2>2. การมีส่วนร่วมจำแนกตามกีฬาและหน่วยงาน</h2><h3>2.1 ข้อมูลจำแนกตามชนิดกีฬา</h3>' . ($sportRows !== '' ? '<table><thead><tr><th>ลำดับ</th><th>กีฬา</th><th>ทีม</th><th>นักกีฬา</th><th>แมตช์</th><th>เสร็จสิ้น</th></tr></thead><tbody>' . $sportRows . '</tbody></table>' : '<p class="muted">ไม่มีข้อมูลกีฬาในขอบเขตที่เลือก</p>') . '<h3>2.2 ข้อมูลจำแนกตามหน่วยงาน</h3>' . ($departmentRows !== '' ? '<table><thead><tr><th>ลำดับ</th><th>หน่วยงาน/สาขา</th><th>ทีม</th><th>นักกีฬา</th></tr></thead><tbody>' . $departmentRows . '</tbody></table>' : '<p class="muted">ไม่มีข้อมูลหน่วยงานในขอบเขตที่เลือก</p>') . '</section>
-<section class="book-page"><h2>3. ผลการแข่งขันและตารางคะแนน</h2><h3>3.1 ผลการแข่งขัน</h3>' . ($resultRows !== '' ? '<table><thead><tr><th>ลำดับ</th><th>กีฬา</th><th>รอบ</th><th>คู่แข่งขัน</th><th>ผล</th><th>ผู้ชนะ</th></tr></thead><tbody>' . $resultRows . '</tbody></table>' : '<p class="muted">ยังไม่มีผลการแข่งขันในขอบเขตที่เลือก</p>') . '<h3>3.2 ตารางคะแนน</h3>' . ($standingRows !== '' ? '<table><thead><tr><th>อันดับ</th><th>กีฬา</th><th>ทีม</th><th>หน่วยงาน</th><th>แข่ง</th><th>ชนะ</th><th>เสมอ</th><th>แพ้</th><th>คะแนน</th></tr></thead><tbody>' . $standingRows . '</tbody></table>' : '<p class="muted">ยังไม่มีตารางคะแนนในขอบเขตที่เลือก</p>') . '</section>
-<section class="book-page"><h2>4. ตัวชี้วัด งบประมาณ และการสื่อสาร</h2><h3>4.1 ผลการดำเนินงานตามตัวชี้วัด</h3>' . ($kpiRows !== '' ? '<table><thead><tr><th>ลำดับ</th><th>ตัวชี้วัด</th><th>หน่วย</th><th>เป้าหมาย</th><th>ผลจริง</th><th>ร้อยละ</th><th>สถานะ</th></tr></thead><tbody>' . $kpiRows . '</tbody></table>' : '<p class="muted">ไม่มีตัวชี้วัดเพิ่มเติม</p>') . '<h3>4.2 งบประมาณ</h3><table class="meta"><tbody><tr><th>งบประมาณที่ได้รับ</th><td class="number">' . number_format((float) ($budget['allocated'] ?? 0), 2) . ' บาท</td></tr><tr><th>ใช้จริง</th><td class="number">' . number_format((float) ($budget['actual'] ?? 0), 2) . ' บาท</td></tr><tr><th>คงเหลือ</th><td class="number">' . number_format((float) ($budget['remaining'] ?? 0), 2) . ' บาท</td></tr><tr><th>ร้อยละการใช้จ่าย</th><td class="number">' . number_format((float) ($budget['usage_percentage'] ?? 0), 2) . '</td></tr></tbody></table><h3>4.3 การประชาสัมพันธ์</h3><table class="meta"><tbody><tr><th>ข่าวทั้งหมด</th><td>' . $e($communications['news_total'] ?? 0) . ' รายการ</td><th>ข่าวเผยแพร่</th><td>' . $e($communications['news_published'] ?? 0) . ' รายการ</td></tr><tr><th>Hall of Fame</th><td>' . $e($communications['hall_of_fame'] ?? 0) . ' รายการ</td><th></th><td></td></tr></tbody></table></section>
-<section class="book-page"><h2>5. ผลลัพธ์ ปัญหา และข้อเสนอแนะ</h2><h3>5.1 ผลการดำเนินงาน</h3>' . $p($outcomes['performance_result'] ?? '') . '<h3>5.2 ผลลัพธ์และประโยชน์ที่ได้รับ</h3>' . $p($outcomes['benefits'] ?? '') . '<h3>5.3 ผลต่อผู้เข้าร่วมและนักกีฬา</h3>' . $p($outcomes['participant_impact'] ?? '') . '<h3>5.4 ปัญหาและอุปสรรค</h3>' . $p($problems['obstacles'] ?? '') . '<h3>5.5 วิธีการแก้ไข</h3>' . $p($problems['solutions'] ?? '') . '<h3>5.6 ข้อเสนอแนะและแนวทางพัฒนา</h3>' . $p($problems['recommendations'] ?? '') . '<h3>หลักฐานประกอบ</h3>' . ($attachments !== '' ? '<ol class="attachments">' . $attachments . '</ol>' : '<p class="muted">ไม่มีเอกสารแนบ</p>') . '<div class="signature"><div>ลงชื่อ ................................................<br>(' . $e($report['prepared_by'] ?: 'ผู้จัดทำรายงาน') . ')<br>ผู้จัดทำรายงาน</div><div>ลงชื่อ ................................................<br>(................................................)<br>ผู้ตรวจสอบ/ผู้อนุมัติ</div></div><div class="report-footer">รายงานฉบับนี้สร้างจากข้อมูลในระบบ SPORT TOURNAMENT เมื่อ ' . $e($report['report_date'] ?: $report['created_at']) . '</div></section>
-</main></body></html>';
-    }
-
-    private static function legacyStoredReportHtml(array $report): string
-    {
-        $e = static fn($value): string => htmlspecialchars((string) ($value ?? ''), ENT_QUOTES, 'UTF-8');
-        $paragraph = static fn($value): string => trim((string) $value) !== ''
-            ? '<p>' . nl2br($e($value)) . '</p>'
-            : '<p class="muted">ไม่ระบุข้อมูล</p>';
-        $general = $report['general'] ?? [];
-        $outcomes = $report['outcomes'] ?? [];
-        $problems = $report['problems'] ?? [];
-        $summary = $report['sports_data']['summary'] ?? [];
-        $metricLabels = [
-            'participants' => 'ผู้เข้าร่วมทั้งหมด',
-            'athletes' => 'นักกีฬา',
-            'sports' => 'ชนิดกีฬา',
-            'competitions' => 'การแข่งขัน',
-            'departments' => 'หน่วยงานที่เข้าร่วม',
-            'teams' => 'ทีม',
-            'completed_matches' => 'การแข่งขันที่เสร็จสิ้น',
-        ];
-        $metricCards = '';
-        foreach ($metricLabels as $key => $label) {
-            $metricCards .= '<div><strong>' . $e($summary[$key] ?? 0) . '</strong><span>' . $e($label) . '</span></div>';
-        }
-        $kpiRows = '';
-        foreach ($report['kpis'] ?? [] as $index => $kpi) {
-            $kpiRows .= '<tr><td class="center">' . ($index + 1) . '</td><td>' . $e($kpi['name']) . '</td><td>' . $e($kpi['unit']) . '</td><td class="number">' . $e($kpi['target_value']) . '</td><td class="number">' . $e($kpi['actual_value']) . '</td><td class="number">' . $e($kpi['achievement']) . '%</td><td>' . $e($kpi['status']) . '</td></tr>';
-        }
-        $resultRows = '';
-        foreach ($report['sports_data']['matches'] ?? [] as $index => $match) {
-            $winner = '-';
-            if (!empty($match['winner_team_id'])) {
-                $winner = (string) $match['winner_team_id'] === (string) ($match['team1_id'] ?? '') ? $match['team1_name'] : $match['team2_name'];
-            }
-            $resultRows .= '<tr><td class="center">' . ($index + 1) . '</td><td>' . $e($match['sport_name']) . '</td><td>' . $e($match['round_name'] ?: '-') . '</td><td>' . $e($match['team1_name'] . ' พบ ' . $match['team2_name']) . '</td><td class="center">' . $e($match['score_label']) . '</td><td>' . $e($winner) . '</td></tr>';
-        }
-        $attachments = '';
-        foreach ($report['attachments'] ?? [] as $index => $file) {
-            $attachments .= '<li><a href="' . $e($file['file_url']) . '">' . $e($file['file_name']) . '</a>' . ($file['note'] ? ' - ' . $e($file['note']) : '') . '</li>';
-        }
-        $budget = $report['budget'] ?? [];
-        $logo = app_url('public/assets/sports/general.svg');
-        $sections = $report['sections'] ?? [];
-        $show = static fn(string $section): bool => in_array($section, $sections, true);
-        $competitionSection = $show('sports_results') ? '
-          <section><h2>4. ผลการแข่งขัน</h2>
-          ' . ($resultRows !== '' ? '<table><thead><tr><th>ลำดับ</th><th>ชนิดกีฬา</th><th>รอบ</th><th>ทีม/หน่วยงาน</th><th>ผลการแข่งขัน</th><th>ผู้ชนะ</th></tr></thead><tbody>' . $resultRows . '</tbody></table>' : '<p class="muted">ยังไม่มีข้อมูลผลการแข่งขันในรายการที่เลือก</p>') . '</section>' : '';
-        $kpiSection = $show('kpi') ? '
-          <section><h2>5. ผลการดำเนินงานตามตัวชี้วัด</h2>
-          ' . ($kpiRows !== '' ? '<table><thead><tr><th>ลำดับ</th><th>ตัวชี้วัด</th><th>หน่วย</th><th>เป้าหมาย</th><th>ผลจริง</th><th>ความสำเร็จ</th><th>สถานะ</th></tr></thead><tbody>' . $kpiRows . '</tbody></table>' : '<p class="muted">ยังไม่มีข้อมูลตัวชี้วัด</p>') . '</section>' : '';
-        $budgetSection = $show('budget') ? '
-          <section><h2>6. งบประมาณ</h2><table class="key-value"><tbody>
-          <tr><th>งบประมาณที่ได้รับ</th><td>' . number_format((float) ($budget['allocated'] ?? 0), 2) . ' บาท</td></tr>
-          <tr><th>งบประมาณที่ใช้จริง</th><td>' . number_format((float) ($budget['actual'] ?? 0), 2) . ' บาท</td></tr>
-          <tr><th>งบประมาณคงเหลือ</th><td>' . number_format((float) ($budget['remaining'] ?? 0), 2) . ' บาท</td></tr>
-          <tr><th>ร้อยละการใช้จ่าย</th><td>' . number_format((float) ($budget['usage_percentage'] ?? 0), 2) . '</td></tr>
-          </tbody></table></section>' : '';
-        $attachmentSection = $show('attachments') ? '<section><h2>9. หลักฐานประกอบ</h2>' . ($attachments ? '<ol>' . $attachments . '</ol>' : '<p class="muted">ไม่มีเอกสารแนบ</p>') . '</section>' : '';
-        $performanceSection = $show('performance') ? '<section><h2>3. ข้อมูลการดำเนินงาน</h2><div class="metrics">' . $metricCards . '</div>' . $paragraph(($report['performance']['operation_detail'] ?? '')) . '</section>' : '';
-        $outcomeSection = $show('outcomes') ? '<section><h2>7. ผลที่ได้รับ</h2><h3>ผลการดำเนินงาน</h3>' . $paragraph($outcomes['performance_result'] ?? '') . '<h3>ผลลัพธ์และประโยชน์ที่ได้รับ</h3>' . $paragraph($outcomes['benefits'] ?? '') . '<h3>ผลต่อผู้เข้าร่วม/นักกีฬา</h3>' . $paragraph($outcomes['participant_impact'] ?? '') . '</section>' : '';
-        $problemSection = $show('problems') ? '<section><h2>8. ปัญหาและข้อเสนอแนะ</h2><h3>ปัญหาและอุปสรรค</h3>' . $paragraph($problems['obstacles'] ?? '') . '<h3>วิธีการแก้ไข</h3>' . $paragraph($problems['solutions'] ?? '') . '<h3>ข้อเสนอแนะและแนวทางพัฒนา</h3>' . $paragraph($problems['recommendations'] ?? '') . '</section>' : '';
-
-        return '<!doctype html>
-<html lang="th"><head><meta charset="utf-8"><title>' . $e($report['title']) . '</title>
-<style>
-@font-face{font-family:Sarabun;src:url("../assets/sarabun-regular.ttf")}@font-face{font-family:Sarabun;src:url("../assets/sarabun-bold.ttf");font-weight:700}
-@page{size:A4;margin:18mm 16mm 20mm}@page{@bottom-center{content:"หน้า " counter(page) " / " counter(pages);font-size:10pt;color:#667085}}
-*{box-sizing:border-box}body{margin:0;background:#eef1f5;color:#202936;font:14px/1.7 Sarabun,"TH Sarabun New",sans-serif}
-main{width:210mm;min-height:297mm;margin:20px auto;padding:18mm 16mm;background:#fff;box-shadow:0 12px 38px #1e293b1f}
-header{text-align:center;border-bottom:3px double #344054;padding-bottom:15px;margin-bottom:18px}.logo{width:150px;max-height:62px;object-fit:contain}
-h1{font-size:23px;line-height:1.45;margin:8px 0 2px}h2{font-size:17px;color:#174c45;margin:22px 0 8px;border-bottom:1px solid #cfd6df;padding-bottom:4px}
-p{margin:0 0 9px;text-align:justify}.muted{color:#667085}.meta,.key-value{width:100%;border-collapse:collapse}.meta{margin-top:13px;text-align:left}.meta th{width:25%}
-table{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0 12px}th,td{border:1px solid #cfd6df;padding:6px 7px;vertical-align:top}th{background:#f3f6f8;font-weight:700}.center{text-align:center}.number{text-align:right}
-.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;margin:12px 0}.metrics div{border:1px solid #cfd6df;padding:9px;text-align:center}.metrics strong{display:block;font-size:20px;color:#174c45}.metrics span{font-size:11px;color:#667085}
-.signature{display:grid;grid-template-columns:1fr 1fr;gap:34px;margin-top:38px;text-align:center}.signature div{padding-top:26px}footer{margin-top:28px;border-top:1px solid #cfd6df;padding-top:8px;text-align:center;color:#667085;font-size:11px}
-@media print{body{background:#fff}main{width:auto;min-height:0;margin:0;padding:0;box-shadow:none}a{color:inherit;text-decoration:none}.no-print{display:none!important}}
-</style></head><body><main>
-<header><img class="logo" src="' . $e($logo) . '" alt="โลโก้การแข่งขัน"><div>SPORT TOURNAMENT</div><h1>' . $e($report['title']) . '</h1><div>' . $e($report['template_name']) . '</div>
-<table class="meta"><tbody>
-<tr><th>ปี/รุ่น</th><td>' . $e($report['academic_year'] ?: '-') . '</td><th>ปีงบประมาณ</th><td>' . $e($report['fiscal_year'] ?: '-') . '</td></tr>
-<tr><th>ภาคการศึกษา</th><td>' . $e($report['semester'] ?: '-') . '</td><th>ช่วงวันที่รายงาน</th><td>' . $e(($report['start_date'] ?: '-') . ' ถึง ' . ($report['end_date'] ?: '-')) . '</td></tr>
-<tr><th>หน่วยงาน</th><td>' . $e($report['department'] ?: '-') . '</td><th>สถานะ</th><td>' . $e($report['status_label']) . '</td></tr>
-<tr><th>ผู้รับผิดชอบ</th><td>' . $e($report['responsible_person'] ?: '-') . '</td><th>ผู้จัดทำรายงาน</th><td>' . $e($report['prepared_by'] ?: '-') . '</td></tr>
-</tbody></table></header>
-<section><h2>สรุปสำหรับผู้บริหาร</h2>' . $paragraph($report['executive_summary'] ?? '') . '<div class="metrics">' . $metricCards . '</div></section>
-<section><h2>1. ข้อมูลทั่วไป</h2><table class="key-value"><tbody>
-<tr><th>ชื่อโครงการ/กิจกรรม</th><td>' . $e($general['project_name'] ?? '-') . '</td></tr>
-<tr><th>ชื่อการแข่งขัน</th><td>' . $e($general['competition_name'] ?? $report['tournament_name'] ?? '-') . '</td></tr>
-<tr><th>วันที่ดำเนินการ</th><td>' . $e($general['operation_date'] ?? '-') . '</td></tr>
-<tr><th>สถานที่</th><td>' . $e($general['location'] ?? '-') . '</td></tr>
-</tbody></table></section>
-' . ($show('principles') ? '<section><h2>2. หลักการและวัตถุประสงค์</h2><h3>หลักการและเหตุผล</h3>' . $paragraph($general['rationale'] ?? '') . '<h3>วัตถุประสงค์</h3>' . $paragraph($general['objectives'] ?? '') . '<h3>กลุ่มเป้าหมาย</h3>' . $paragraph($general['target_group'] ?? '') . '</section>' : '') . '
-' . $performanceSection . $competitionSection . $kpiSection . $budgetSection . $outcomeSection . $problemSection . $attachmentSection . '
-<div class="signature"><div>ลงชื่อ ................................................<br>(' . $e($report['prepared_by'] ?: 'ผู้จัดทำรายงาน') . ')<br>ผู้จัดทำรายงาน</div><div>ลงชื่อ ................................................<br>(................................................)<br>ผู้ตรวจสอบ/ผู้อนุมัติ</div></div>
-<footer>จัดทำเมื่อ ' . $e($report['report_date'] ?: $report['created_at']) . ' | ข้อมูลการแข่งขันอ้างอิงจากระบบ SPORT TOURNAMENT</footer>
-</main></body></html>';
-    }
-
-    private static function formalReportHtml(array $result): string
-    {
-        $e = static fn($value): string => htmlspecialchars((string) ($value ?? ''), ENT_QUOTES, 'UTF-8');
-        $list = static function (array $items) use ($e): string {
-            if (!$items) {
-                return '<p class="muted">ไม่พบข้อมูลในส่วนนี้</p>';
-            }
-            return '<ol>' . implode('', array_map(fn($item): string => '<li>' . $e($item) . '</li>', $items)) . '</ol>';
-        };
-        $metrics = [
-            'sports' => 'จำนวนกีฬา',
-            'activeSports' => 'กีฬาเปิดใช้งาน',
-            'teams' => 'จำนวนทีม',
-            'approvedTeams' => 'ทีมที่อนุมัติ',
-            'students' => 'จำนวนนักกีฬา',
-            'tournaments' => 'จำนวนรายการแข่งขัน',
-            'matches' => 'จำนวนแมตช์',
-            'completedMatches' => 'แมตช์ที่บันทึกผลแล้ว',
-        ];
-        $metricRows = '';
-        foreach ($metrics as $key => $label) {
-            if (array_key_exists($key, $result['metrics'] ?? [])) {
-                $metricRows .= '<tr><th>' . $e($label) . '</th><td>' . $e($result['metrics'][$key]) . '</td></tr>';
-            }
-        }
-
-        return '<!doctype html>
-<html lang="th">
-<head>
-  <meta charset="utf-8">
-  <title>' . $e($result['title']) . '</title>
-  <style>
-    @page { size: A4; margin: 18mm; }
-    * { box-sizing: border-box; }
-    body { margin: 0; color: #17212b; font-family: "Sarabun", "TH Sarabun New", Tahoma, sans-serif; line-height: 1.75; background: #f3f5f7; }
-    main { width: 210mm; min-height: 297mm; margin: 24px auto; padding: 24mm 22mm; background: #fff; box-shadow: 0 16px 48px rgba(15, 23, 42, .12); }
-    header { text-align: center; border-bottom: 3px double #2f3b52; padding-bottom: 18px; margin-bottom: 24px; }
-    .kicker { color: #526070; font-size: 14px; letter-spacing: .04em; }
-    h1 { margin: 8px 0 4px; font-size: 28px; line-height: 1.35; }
-    h2 { margin: 24px 0 8px; font-size: 20px; color: #0f5f57; border-bottom: 1px solid #d7dde5; padding-bottom: 5px; }
-    p { margin: 0 0 12px; text-align: justify; }
-    .meta { display: grid; grid-template-columns: 42mm 1fr; gap: 5px 12px; margin-top: 16px; text-align: left; font-size: 15px; }
-    .meta strong { color: #2f3b52; }
-    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 15px; }
-    th, td { border: 1px solid #d7dde5; padding: 8px 10px; vertical-align: top; }
-    th { width: 45%; background: #f5f8fa; text-align: left; color: #263548; }
-    ol { margin: 8px 0 0 24px; padding: 0; }
-    li { margin-bottom: 7px; }
-    .signature { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-top: 42px; }
-    .sig-box { text-align: center; padding-top: 32px; }
-    .muted { color: #697386; }
-    footer { margin-top: 28px; padding-top: 12px; border-top: 1px solid #d7dde5; color: #697386; font-size: 13px; text-align: center; }
-    @media print { body { background: #fff; } main { margin: 0; width: auto; min-height: auto; box-shadow: none; padding: 0; } }
-  </style>
-</head>
-<body>
-<main>
-  <header>
-    <div class="kicker">SPORT TOURNAMENT</div>
-    <h1>' . $e($result['report_type_label'] ?? 'รายงานระบบกีฬา') . '</h1>
-    <div class="muted">' . $e($result['title']) . '</div>
-    <div class="meta">
-      <strong>วันที่จัดทำรายงาน</strong><span>' . $e($result['created_at_label'] ?? '') . '</span>
-      <strong>ผู้จัดทำรายงาน</strong><span>' . $e($result['generated_by'] ?? '-') . '</span>
-      <strong>แหล่งข้อมูล</strong><span>ระบบบริหารจัดการแข่งขันกีฬา SPORT TOURNAMENT</span>
-      <strong>เครื่องมือประมวลผล</strong><span>' . $e(($result['provider'] ?? '') . ' / ' . ($result['model'] ?? '')) . '</span>
-    </div>
-  </header>
-
-  <h2>1. สรุปผู้บริหาร</h2>
-  <p>' . nl2br($e($result['executive_summary'] ?? '')) . '</p>
-
-  <h2>2. ตัวชี้วัดจากระบบ</h2>
-  <table><tbody>' . $metricRows . '</tbody></table>
-
-  <h2>3. ประเด็นที่ควรดำเนินการต่อ</h2>
-  ' . $list($result['analysis'] ?? []) . '
-
-  <h2>4. ความเสี่ยงและข้อควรพิจารณา</h2>
-  ' . $list($result['risks'] ?? []) . '
-
-  <h2>5. ข้อเสนอแนะ</h2>
-  ' . $list($result['recommendations'] ?? []) . '
-
-  <div class="signature">
-    <div class="sig-box">ลงชื่อ .................................................<br>ผู้จัดทำรายงาน</div>
-    <div class="sig-box">ลงชื่อ .................................................<br>ผู้ตรวจสอบ/ผู้อนุมัติ</div>
-  </div>
-  <footer>รายงานฉบับนี้จัดทำจากข้อมูลที่บันทึกในระบบ ณ เวลาที่ระบุข้างต้น</footer>
-</main>
-</body>
-</html>';
-    }
-
-    private static function reportTypeLabel(string $type): string
-    {
-        return [
-            'executive' => 'รายงานสรุปผลการดำเนินงานสำหรับผู้บริหาร',
-            'competition' => 'รายงานผลการแข่งขันกีฬา',
-            'registration' => 'รายงานทะเบียนนักกีฬา',
-            'data_quality' => 'รายงานคุณภาพข้อมูลระบบกีฬา',
-        ][$type] ?? 'รายงานระบบกีฬา';
     }
 
     public static function audit(string $action, string $entity, string $entityId, array $detail): void
@@ -3682,172 +3239,6 @@ table{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0 12px}th,td
         return in_array($icon, ['football', 'volleyball', 'basketball', 'badminton', 'table-tennis', 'tennis', 'running', 'swimming', 'esports', 'general'], true) ? $icon : 'general';
     }
 
-    private static function validateTournamentPayload(array $payload): array
-    {
-        $sportIds = self::tournamentSportIds($payload);
-        $sportId = (string) $sportIds[0];
-        $name = trim((string) ($payload['name'] ?? ''));
-        $format = (string) ($payload['format'] ?? 'knockout');
-        $status = (string) ($payload['status'] ?? 'draft');
-        if ($name === '') {
-            throw new InvalidArgumentException('กรุณากรอกชื่อรายการแข่ง');
-        }
-        if (!in_array($format, ['knockout', 'round_robin', 'group', 'group_knockout'], true)) {
-            throw new InvalidArgumentException('รูปแบบรายการไม่ถูกต้อง');
-        }
-        if (!in_array($status, ['draft', 'data_entry', 'ready', 'registration', 'closed', 'in_progress', 'completed', 'cancelled'], true)) {
-            throw new InvalidArgumentException('สถานะรายการไม่ถูกต้อง');
-        }
-        $startsAt = trim((string) ($payload['starts_at'] ?? ''));
-        $endsAt = trim((string) ($payload['ends_at'] ?? ''));
-        if ($startsAt !== '' && $endsAt !== '' && $endsAt < $startsAt) {
-            throw new InvalidArgumentException('วันสิ้นสุดต้องไม่ก่อนวันเริ่ม');
-        }
-        return [
-            'academic_year' => trim((string) ($payload['academic_year'] ?? '')),
-            'sport_id' => $sportId,
-            'name' => $name,
-            'logo_url' => trim((string) ($payload['logo_url'] ?? '')),
-            'format' => $format,
-            'starts_at' => $startsAt,
-            'ends_at' => $endsAt,
-            'status' => $status,
-        ];
-    }
-
-    private static function tournamentSportIds(array $payload): array
-    {
-        $raw = $payload['sport_ids'] ?? [];
-        if (!is_array($raw)) {
-            $raw = preg_split('/\s*,\s*/', trim((string) $raw), -1, PREG_SPLIT_NO_EMPTY);
-        }
-        if (!$raw && !empty($payload['sport_id'])) {
-            $raw = [$payload['sport_id']];
-        }
-        $ids = [];
-        foreach ($raw as $value) {
-            $id = trim((string) $value);
-            if ($id !== '' && ctype_digit($id)) {
-                $ids[] = (int) $id;
-            }
-        }
-        $ids = array_values(array_unique($ids));
-        if (!$ids) {
-            throw new InvalidArgumentException('กรุณาเลือกกีฬาอย่างน้อย 1 รายการ');
-        }
-        $placeholders = implode(',', array_fill(0, count($ids), '?'));
-        $stmt = Database::pdo()->prepare("SELECT id FROM sports WHERE id IN ({$placeholders})");
-        $stmt->execute($ids);
-        $found = array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
-        $missing = array_values(array_diff($ids, $found));
-        if ($missing) {
-            throw new RuntimeException('ไม่พบกีฬาในฐานข้อมูล: ' . implode(', ', $missing));
-        }
-        return $ids;
-    }
-
-    private static function replaceTournamentSports(string $tournamentId, array $sportIds): void
-    {
-        $existing = array_map('intval', array_column(self::fetchAll(
-            'SELECT sport_id FROM tournament_sports WHERE tournament_id = :id',
-            [':id' => $tournamentId]
-        ), 'sport_id'));
-        $removed = array_diff($existing, $sportIds);
-        foreach ($removed as $sportId) {
-            $params = [':tournament_id' => $tournamentId, ':sport_id' => $sportId];
-            $teamCount = self::countRows('teams', 'tournament_id = :tournament_id AND sport_id = :sport_id', $params);
-            $matchCount = self::countRows('matches', 'tournament_id = :tournament_id AND sport_id = :sport_id', $params);
-            if ($teamCount > 0 || $matchCount > 0) {
-                throw new RuntimeException('นำกีฬาออกจากทัวร์นาเมนต์ไม่ได้ เพราะมีทีม หรือแมตช์เชื่อมโยงอยู่ กรุณาจัดการข้อมูลที่เกี่ยวข้องก่อน');
-            }
-            self::deleteRowsWhere('tournament_departments', 'tournament_id = :tournament_id AND sport_id = :sport_id', $params);
-            self::deleteRowsWhere('tournament_sport_settings', 'tournament_id = :tournament_id AND sport_id = :sport_id', $params);
-            self::deleteRowsWhere('tournament_sports', 'tournament_id = :tournament_id AND sport_id = :sport_id', $params);
-        }
-        foreach ($sportIds as $sportId) {
-            if (!in_array((int) $sportId, $existing, true)) {
-                Database::pdo()->prepare(
-                    'INSERT INTO tournament_sports (tournament_id, sport_id) VALUES (:tournament_id, :sport_id)'
-                )->execute([':tournament_id' => $tournamentId, ':sport_id' => $sportId]);
-            }
-            self::ensureTournamentSportSetting($tournamentId, (string) $sportId);
-        }
-    }
-
-    private static function assertTournamentSport(string $tournamentId, string $sportId): void
-    {
-        if ($tournamentId === '' || $sportId === '' || !self::fetchOne(
-            'SELECT sport_id FROM tournament_sports WHERE tournament_id = :tournament_id AND sport_id = :sport_id',
-            [':tournament_id' => $tournamentId, ':sport_id' => $sportId]
-        )) {
-            throw new RuntimeException('กีฬานี้ไม่ได้อยู่ในทัวร์นาเมนต์ที่เลือก');
-        }
-    }
-
-    private static function ensureTournamentSportSetting(string $tournamentId, string $sportId): array
-    {
-        $existing = self::fetchOne(
-            'SELECT * FROM tournament_sport_settings WHERE tournament_id = :tournament_id AND sport_id = :sport_id',
-            [':tournament_id' => $tournamentId, ':sport_id' => $sportId]
-        );
-        if ($existing) {
-            return $existing;
-        }
-        $rule = self::activeSportRule($sportId);
-        return self::insertRow('tournament_sport_settings', [
-            'id' => self::nextId('tournament_sport_settings'),
-            'tournament_id' => $tournamentId,
-            'sport_id' => $sportId,
-            'rule_version_id' => $rule['id'],
-            'status' => 'pending',
-            'notes' => '',
-            'created_at' => Database::now(),
-            'updated_at' => Database::now(),
-        ]);
-    }
-
-    private static function tournamentSportRule(string $tournamentId, string $sportId): array
-    {
-        $setting = self::fetchOne(
-            'SELECT rule_version_id FROM tournament_sport_settings
-             WHERE tournament_id = :tournament_id AND sport_id = :sport_id',
-            [':tournament_id' => $tournamentId, ':sport_id' => $sportId]
-        );
-        if (!empty($setting['rule_version_id'])) {
-            return self::decodeSportRule(self::findById('sport_rule_versions', (string) $setting['rule_version_id']));
-        }
-        return self::activeSportRule($sportId);
-    }
-
-    private static function enrichedTournamentRows(array $rows): array
-    {
-        foreach ($rows as &$row) {
-            $csv = (string) ($row['sport_ids_csv'] ?? (is_array($row['sport_ids'] ?? null) ? implode(',', $row['sport_ids']) : ($row['sport_ids'] ?? '')));
-            if ($csv === '' && !empty($row['id'])) {
-                $links = self::fetchAll('SELECT sport_id FROM tournament_sports WHERE tournament_id = :id ORDER BY sport_id', [':id' => $row['id']]);
-                $csv = implode(',', array_column($links, 'sport_id'));
-            }
-            if ($csv === '') {
-                $csv = (string) ($row['sport_id'] ?? '');
-            }
-            $ids = array_values(array_filter(array_map('intval', preg_split('/\s*,\s*/', $csv, -1, PREG_SPLIT_NO_EMPTY))));
-            if (!$ids && !empty($row['sport_id'])) {
-                $ids = [(int) $row['sport_id']];
-            }
-            $row['sport_ids'] = $ids;
-            $names = (string) ($row['sport_names'] ?? '');
-            if ($names === '' && $ids) {
-                $placeholders = implode(',', array_fill(0, count($ids), '?'));
-                $stmt = Database::pdo()->prepare("SELECT name FROM sports WHERE id IN ({$placeholders}) ORDER BY id");
-                $stmt->execute($ids);
-                $names = implode(' · ', $stmt->fetchAll(PDO::FETCH_COLUMN));
-            }
-            $row['sport_name'] = $names ?: (string) ($row['primary_sport_name'] ?? '');
-            unset($row['primary_sport_name'], $row['sport_ids_csv']);
-        }
-        unset($row);
-        return $rows;
-    }
 
     private static function validateStudentPayload(array $payload): array
     {
@@ -3999,7 +3390,7 @@ table{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0 12px}th,td
     private static function validateUserPayload(array $payload, bool $isNew): array
     {
         $email = strtolower(trim((string) ($payload['email'] ?? '')));
-        $role = (string) ($payload['role'] ?? Auth::ROLE_REGISTRATION_OFFICER);
+        $role = (string) ($payload['role'] ?? Auth::ROLE_ADMIN);
         $departmentCode = trim((string) ($payload['department_code'] ?? ''));
         $allowedRoles = array_column(Auth::roleOptions(), 'value');
         if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
@@ -4039,7 +3430,7 @@ table{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0 12px}th,td
     private static function validateInvitePayload(array $payload): array
     {
         $email = strtolower(trim((string) ($payload['email'] ?? '')));
-        $role = (string) ($payload['role'] ?? Auth::ROLE_REGISTRATION_OFFICER);
+        $role = (string) ($payload['role'] ?? Auth::ROLE_ADMIN);
         $departmentCode = trim((string) ($payload['department_code'] ?? ''));
         $allowedRoles = array_column(Auth::roleOptions(), 'value');
         if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
@@ -4082,6 +3473,31 @@ table{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0 12px}th,td
         $tieBreak = self::jsonObject((string) ($row['tie_break_rules'] ?? '{}'));
         $ranking = self::jsonObject((string) ($row['ranking_rules'] ?? '{}'));
         $custom = self::jsonObject((string) ($row['custom_rules'] ?? '{}'));
+        $legacyTypes = ['points' => 'SCORE', 'sets' => 'SET', 'time' => 'TIME', 'rank' => 'RACE_POSITION'];
+        $row['scoring_type'] = strtoupper((string) ($row['scoring_type'] ?? $legacyTypes[$scoring['mode'] ?? 'points'] ?? 'SCORE'));
+        $row['scoring_config_data'] = self::jsonObject((string) ($row['scoring_config'] ?? '{}'));
+        if ($row['scoring_type'] === 'SCORE') {
+            $row['scoring_config_data'] = array_replace([
+                'allow_draw' => !empty($match['allow_draw']),
+                'allow_extra_time' => !empty($overtime['enabled']),
+                'allow_penalty' => (string) ($tieBreak['method'] ?? 'draw') === 'penalty',
+                'include_in_standings' => true,
+            ], $row['scoring_config_data']);
+        } elseif ($row['scoring_type'] === 'SET') {
+            $row['scoring_config_data'] = array_replace(['best_of' => max(1, (int) ($period['count'] ?? 3)), 'include_in_standings' => true], $row['scoring_config_data']);
+        }
+        $row['scoring_config_text'] = json_encode($row['scoring_config_data'], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        $row['include_in_standings'] = !array_key_exists('include_in_standings', $row['scoring_config_data']) || !empty($row['scoring_config_data']['include_in_standings']);
+        $row['best_of'] = (int) ($row['scoring_config_data']['best_of'] ?? 3);
+        $row['points_to_win'] = (int) ($row['scoring_config_data']['points_to_win_set'] ?? $row['scoring_config_data']['points_to_win'] ?? 0);
+        $row['set_win_by'] = (int) ($row['scoring_config_data']['win_by'] ?? 2);
+        $row['max_points'] = (int) ($row['scoring_config_data']['max_points'] ?? 0);
+        $row['normal_set_points'] = (int) ($row['scoring_config_data']['normal_set_points'] ?? 0);
+        $row['final_set_points'] = (int) ($row['scoring_config_data']['final_set_points'] ?? 0);
+        $row['target_score'] = (int) ($row['scoring_config_data']['target_score'] ?? 13);
+        $row['aggregation'] = (string) ($row['scoring_config_data']['aggregation'] ?? 'SUM');
+        $row['quick_points'] = implode(',', (array) ($row['scoring_config_data']['quick_points'] ?? ($row['scoring_type'] === 'PERIOD_SCORE' ? [1, 2, 3] : [1])));
+        $row['numeric_win_by'] = (string) ($row['scoring_config_data']['win_by'] ?? 'HIGHEST');
         $row['scoring_mode'] = $scoring['mode'] ?? 'points';
         $row['win_by'] = $scoring['win_by'] ?? 'highest';
         $row['event_points'] = (int) ($scoring['event_points'] ?? 1);
@@ -4112,6 +3528,61 @@ table{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0 12px}th,td
         $row['usage_count'] = $row['tournament_usage_count'] + $row['match_usage_count'];
         $row['is_referenced'] = $row['usage_count'] > 0;
         return $row;
+    }
+
+    private static function decodeMatchResult(array $row): array
+    {
+        $row['config_snapshot_data'] = self::jsonObject((string) ($row['config_snapshot'] ?? '{}'));
+        $row['result_data_value'] = self::jsonObject((string) ($row['result_data'] ?? '{}'));
+        $row['summary'] = self::jsonObject((string) ($row['summary_json'] ?? '{}'));
+        return $row;
+    }
+
+    private static function scoringConfigFromPayload(string $type, array $payload): array
+    {
+        $config = [];
+        if (array_key_exists('include_in_standings', $payload)) {
+            $config['include_in_standings'] = self::boolToInt($payload['include_in_standings']) === 1;
+        }
+        if (in_array($type, ['SCORE', 'PERIOD_SCORE'], true) && array_key_exists('quick_points', $payload)) {
+            $tokens = preg_split('/\s*,\s*/', trim((string) $payload['quick_points'])) ?: [];
+            if (!$tokens || count($tokens) > 10 || array_filter($tokens, static fn(string $value): bool => preg_match('/^(?:[1-9]|10)$/', $value) !== 1)) {
+                throw new InvalidArgumentException('ปุ่มเพิ่มแต้มต้องเป็นจำนวนเต็ม 1-10 ไม่เกิน 10 ค่า');
+            }
+            $config['quick_points'] = array_values(array_unique(array_map('intval', $tokens)));
+        }
+        if ($type === 'SCORE') {
+            if (array_key_exists('allow_draw', $payload)) $config['allow_draw'] = self::boolToInt($payload['allow_draw']) === 1;
+            if (array_key_exists('overtime_enabled', $payload)) $config['allow_extra_time'] = self::boolToInt($payload['overtime_enabled']) === 1;
+            if (array_key_exists('tie_break_method', $payload)) $config['allow_penalty'] = (string) $payload['tie_break_method'] === 'penalty';
+            return $config;
+        }
+        if ($type === 'SET') {
+            if (array_key_exists('best_of', $payload) || array_key_exists('period_count', $payload)) $config['best_of'] = max(1, (int) ($payload['best_of'] ?? $payload['period_count']));
+            if (array_key_exists('points_to_win', $payload) && (int) $payload['points_to_win'] > 0) $config['points_to_win_set'] = (int) $payload['points_to_win'];
+            if (array_key_exists('normal_set_points', $payload) && (int) $payload['normal_set_points'] > 0) $config['normal_set_points'] = (int) $payload['normal_set_points'];
+            if (array_key_exists('final_set_points', $payload) && (int) $payload['final_set_points'] > 0) $config['final_set_points'] = (int) $payload['final_set_points'];
+            if (array_key_exists('set_win_by', $payload)) $config['win_by'] = max(1, (int) $payload['set_win_by']);
+            if (array_key_exists('max_points', $payload) && (int) $payload['max_points'] > 0) $config['max_points'] = (int) $payload['max_points'];
+            return $config;
+        }
+        if ($type === 'PERIOD_SCORE') {
+            if (array_key_exists('period_count', $payload)) $config['periods'] = max(1, (int) $payload['period_count']);
+            if (array_key_exists('overtime_enabled', $payload)) $config['allow_overtime'] = self::boolToInt($payload['overtime_enabled']) === 1;
+        }
+        if (in_array($type, ['ROUND', 'END_SCORE'], true) && array_key_exists('target_score', $payload)) {
+            $config['target_score'] = $type === 'ROUND' ? max(0, (int) $payload['target_score']) : max(1, (int) $payload['target_score']);
+        }
+        if ($type === 'MAP' && (array_key_exists('best_of', $payload) || array_key_exists('period_count', $payload))) $config['best_of'] = max(1, (int) ($payload['best_of'] ?? $payload['period_count']));
+        if (in_array($type, ['JUDGED', 'TARGET', 'POINT_RANKING'], true) && array_key_exists('aggregation', $payload)) {
+            $config['aggregation'] = strtoupper((string) $payload['aggregation']);
+        }
+        if (in_array($type, ['COUNT', 'COMBINED'], true) && array_key_exists('numeric_win_by', $payload)) {
+            $winBy = strtoupper((string) $payload['numeric_win_by']);
+            if (!in_array($winBy, ['HIGHEST', 'LOWEST'], true)) throw new InvalidArgumentException('วิธีตัดสินค่าตัวเลขไม่ถูกต้อง');
+            $config['win_by'] = $winBy;
+        }
+        return $config;
     }
 
     private static function activeSportRule(string $sportId): array
@@ -4190,6 +3661,10 @@ table{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0 12px}th,td
     private static function syncMatchScoreFromEvents(string $matchId): void
     {
         $match = self::findById('matches', $matchId);
+        $confirmedResult = self::fetchOne('SELECT scoring_type FROM match_results WHERE match_id = :match_id LIMIT 1', [':match_id' => $matchId]);
+        if ($confirmedResult && !in_array((string) $confirmedResult['scoring_type'], ['SCORE', 'PERIOD_SCORE'], true)) {
+            return;
+        }
         $hasScoringHistory = self::fetchOne(
             'SELECT id FROM match_events WHERE match_id = :match_id AND points != 0 LIMIT 1',
             [':match_id' => $matchId]
@@ -4233,7 +3708,13 @@ table{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0 12px}th,td
             ];
         }
         $rules = [];
-        foreach (self::fetchAll("SELECT * FROM matches WHERE tournament_id = :tournament_id AND status = 'completed'", [':tournament_id' => $tournamentId]) as $match) {
+        foreach (self::fetchAll(
+            "SELECT matches.*, match_results.config_snapshot AS result_config_snapshot
+             FROM matches
+             LEFT JOIN match_results ON match_results.match_id = matches.id
+             WHERE matches.tournament_id = :tournament_id AND matches.status = 'completed'",
+            [':tournament_id' => $tournamentId]
+        ) as $match) {
             $team1 = (string) ($match['team1_id'] ?? '');
             $team2 = (string) ($match['team2_id'] ?? '');
             if (!isset($rows[$team1], $rows[$team2])) {
@@ -4242,13 +3723,27 @@ table{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0 12px}th,td
             $ruleId = (string) ($match['rule_version_id'] ?? '');
             if (!isset($rules[$ruleId])) {
                 $decoded = $ruleId !== '' ? self::decodeSportRule(self::findById('sport_rule_versions', $ruleId)) : [];
+                $detected = $decoded && !empty($match['sport_id'])
+                    ? ScoringTypeDetector::detect(self::findById('sports', (string) $match['sport_id']), $decoded)
+                    : 'SCORE';
                 $rules[$ruleId] = [
                     'win' => (int) ($decoded['win_points'] ?? 3),
                     'draw' => (int) ($decoded['draw_points'] ?? 1),
                     'loss' => (int) ($decoded['loss_points'] ?? 0),
+                    'ranking_mode' => in_array($detected, ['TIME', 'RACE_POSITION', 'DISTANCE', 'HEIGHT', 'POINT_RANKING'], true),
+                    'include' => !in_array($detected, ['TIME', 'RACE_POSITION', 'DISTANCE', 'HEIGHT', 'POINT_RANKING'], true)
+                        && (!array_key_exists('include_in_standings', $decoded['scoring_config_data'] ?? [])
+                        || !empty($decoded['scoring_config_data']['include_in_standings'])),
                 ];
             }
             $rule = $rules[$ruleId];
+            if (trim((string) ($match['result_config_snapshot'] ?? '')) !== '') {
+                $resultConfig = self::jsonObject((string) $match['result_config_snapshot']);
+                $rule['include'] = !array_key_exists('include_in_standings', $resultConfig) || !empty($resultConfig['include_in_standings']);
+            }
+            if (!$rule['include'] || $rule['ranking_mode']) {
+                continue;
+            }
             $score1 = (int) ($match['team1_score'] ?? 0);
             $score2 = (int) ($match['team2_score'] ?? 0);
             $rows[$team1]['played']++; $rows[$team2]['played']++;
@@ -4378,7 +3873,10 @@ table{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0 12px}th,td
                     d1.logo_url AS team1_department_logo_url,
                     d2.logo_url AS team2_department_logo_url,
                     d1.name AS team1_department_name,
-                    d2.name AS team2_department_name
+                    d2.name AS team2_department_name,
+                    match_results.scoring_type AS result_scoring_type,
+                    match_results.summary_json AS result_summary_json,
+                    match_results.revision_number AS result_revision_number
              FROM matches
              LEFT JOIN tournaments ON tournaments.id = matches.tournament_id
              LEFT JOIN sports ON sports.id = COALESCE(matches.sport_id, tournaments.sport_id)
@@ -4386,14 +3884,17 @@ table{width:100%;border-collapse:collapse;font-size:12px;margin:8px 0 12px}th,td
              LEFT JOIN teams team2 ON team2.id = matches.team2_id
              LEFT JOIN departments d1 ON d1.code = team1.department_code
              LEFT JOIN departments d2 ON d2.code = team2.department_code
+             LEFT JOIN match_results ON match_results.match_id = matches.id
              ORDER BY matches.id DESC"
         );
         foreach ($rows as &$row) {
             $row['match_code'] = 'T' . ($row['tournament_id'] ?: '-') . '-M' . ($row['match_number'] ?: $row['id'] ?: '-');
             $row['team1_name'] = $row['team1_name_raw'] ?: ($row['team1_department_name'] ?: ($row['team1_id'] ?: 'ทีม 1'));
             $row['team2_name'] = $row['team2_name_raw'] ?: ($row['team2_department_name'] ?: ($row['team2_id'] ?: 'ทีม 2'));
+            $resultSummary = self::jsonObject((string) ($row['result_summary_json'] ?? '{}'));
+            $row['result_summary'] = $resultSummary;
             $row['score_label'] = (string) $row['status'] === 'completed'
-                ? (string) ($row['team1_score'] ?? 0) . ' - ' . (string) ($row['team2_score'] ?? 0)
+                ? (string) ($resultSummary['display_score'] ?? ((string) ($row['team1_score'] ?? 0) . ' - ' . (string) ($row['team2_score'] ?? 0)))
                 : 'ยังไม่บันทึกผล';
             $row['status_label'] = self::matchStatusLabel((string) ($row['status'] ?? 'scheduled'));
             $row['display_label'] = $row['match_code'] . ' | ' . ($row['sport_name'] ?: 'ไม่ระบุกีฬา') . ' | ' . ($row['tournament_name'] ?: $row['tournament_id']) . ' | ' . $row['team1_name'] . ' พบ ' . $row['team2_name'] . ' | ' . $row['score_label'];

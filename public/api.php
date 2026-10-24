@@ -21,7 +21,7 @@ try {
     $status = str_contains($error->getMessage(), 'ไม่มีสิทธิ์') ? 403 : 400;
     json_response(['ok' => false, 'error' => $error->getMessage()], $status);
 } catch (Throwable $error) {
-    error_log($error);
+    error_log((string) $error);
     json_response(['ok' => false, 'error' => 'เกิดข้อผิดพลาดภายในระบบ'], 500);
 }
 

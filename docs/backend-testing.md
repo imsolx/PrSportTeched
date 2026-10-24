@@ -103,9 +103,8 @@ student_code,prefix,first_name,last_name,department_code,entry_year,gender,phone
 - สร้างผู้ใช้ทดสอบโดยระบุอีเมล ชื่อ รหัสผ่าน บทบาท สาขา และกีฬาที่รับผิดชอบ
 - ทดสอบบทบาทหลัก:
   - `super_admin`: เห็นทุกเมนู
-  - `admin`: จัดการข้อมูลส่วนใหญ่
+  - `admin`: จัดการข้อมูลส่วนใหญ่ รวมงานทะเบียนนักศึกษาและทีม
   - `sport_head`: จัดการงานกีฬาและการแข่งขัน
-  - `registration_officer`: จัดการนักศึกษาและทีม
   - `result_officer`: บันทึกผลการแข่งขัน
   - `public_relations`: จัดการข่าวสาร
   - `viewer`: ดูข้อมูลและแดชบอร์ด

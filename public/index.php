@@ -18,6 +18,9 @@ $csrf = Auth::csrfToken();
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Prompt:wght@400;500;600;700;800&display=swap">
   <link rel="stylesheet" href="<?= htmlspecialchars(versioned_asset_url('public/assets/app.css'), ENT_QUOTES, 'UTF-8') ?>">
   <link rel="stylesheet" href="<?= htmlspecialchars(versioned_asset_url('public/assets/workspace.css'), ENT_QUOTES, 'UTF-8') ?>">
+  <link rel="stylesheet" href="<?= htmlspecialchars(versioned_asset_url('public/assets/modules/news/news.css'), ENT_QUOTES, 'UTF-8') ?>">
+  <link rel="stylesheet" href="<?= htmlspecialchars(versioned_asset_url('public/assets/modules/tournaments.css'), ENT_QUOTES, 'UTF-8') ?>">
+  <link rel="stylesheet" href="<?= htmlspecialchars(versioned_asset_url('public/assets/modules/admin-users.css'), ENT_QUOTES, 'UTF-8') ?>">
 </head>
 <body>
   <header class="topbar">
@@ -28,6 +31,7 @@ $csrf = Auth::csrfToken();
         <small>จัดการแข่งขันสำหรับทุกงาน</small>
       </span>
     </button>
+    <div class="official-topbar-heading"><strong>ศูนย์เลือกหน้าบันทึก</strong><small>เลือกแมตช์เพื่อเปิดหน้าเฉพาะตามรูปแบบกติกา</small></div>
     <nav class="tabs" id="main-navigation" aria-label="เมนูหลัก">
       <a class="tab active" href="./" data-view-button="public">ดูหน้าเว็บไซต์</a>
       <button class="tab" data-view-button="public-sports">กีฬา</button>
@@ -42,19 +46,23 @@ $csrf = Auth::csrfToken();
       <button class="tab admin-link" data-view-button="students" hidden>นักกีฬา</button>
       <button class="tab admin-link" data-view-button="teams" hidden>ทีม</button>
       <button class="tab admin-link" data-view-button="matches" hidden>จัดการทัวร์นาเมนต์</button>
-      <button class="tab admin-link" data-view-button="official" hidden>ศูนย์ควบคุมการแข่งขัน</button>
+      <button class="tab admin-link" data-view-button="official" hidden><i data-lucide="monitor-play" aria-hidden="true"></i><span>ศูนย์ควบคุมการแข่งขัน</span></button>
       <button class="tab admin-link" data-view-button="news" hidden>ข่าวสาร</button>
       <button class="tab admin-link" data-view-button="users" hidden>ผู้ดูแลระบบ</button>
-      <button class="tab admin-link" data-view-button="reports" hidden>รายงาน</button>
     </nav>
     <div class="session-box">
       <span id="current-user-label">ผู้เยี่ยมชม</span>
+      <button class="btn small role-switch-button" id="role-switch-button" type="button" title="สลับมุมมองตามบทบาท" aria-label="สลับมุมมองตามบทบาท" hidden><i data-lucide="users-round"></i><span>สลับมุมมอง</span></button>
       <a class="btn small ghost frontend-link" id="frontend-view-button" href="./" data-view-button="public" title="ดูหน้าเว็บไซต์" aria-label="ดูหน้าเว็บไซต์" hidden><i data-lucide="monitor"></i><span>ดูหน้าเว็บไซต์</span></a>
       <button class="btn small icon-button" id="profile-toggle" type="button" title="บัญชีของฉัน" aria-label="บัญชีของฉัน" hidden><i data-lucide="user-cog"></i></button>
       <button class="btn small" id="login-toggle" type="button">เข้าสู่ระบบ</button>
       <button class="btn small ghost" id="logout-button" type="button" hidden>ออกจากระบบ</button>
     </div>
   </header>
+  <aside class="role-preview-bar" id="role-preview-bar" aria-live="polite" hidden>
+    <div><i data-lucide="scan-eye" aria-hidden="true"></i><span>โหมดพรีเซนต์</span><strong id="role-preview-label"></strong><small>จำลองเฉพาะมุมมอง บัญชีจริงยังเป็น System Admin</small></div>
+    <button class="btn small" id="role-preview-exit" type="button"><i data-lucide="rotate-ccw"></i><span>กลับมุมมองจริง</span></button>
+  </aside>
   <button id="navigation-backdrop" aria-label="ปิดเมนู" hidden></button>
   <div id="page-progress" hidden role="progressbar" aria-label="กำลังโหลดข้อมูล"></div>
 
@@ -182,19 +190,14 @@ $csrf = Auth::csrfToken();
       </div>
     </section>
 
-    <section class="view content-band" id="view-public-news" hidden>
-      <div class="section-head"><h2>ข่าวสาร</h2><select id="news-tournament-filter" aria-label="กรองข่าวตามทัวร์นาเมนต์"></select></div>
-      <div class="news-grid" id="public-news-page"></div>
-    </section>
+<?php require __DIR__ . '/pages/news/PublicNewsList.php'; ?>
 
-    <section class="view article-page" id="view-public-news-detail" hidden>
-      <div id="public-news-detail" aria-live="polite"></div>
-    </section>
+<?php require __DIR__ . '/pages/news/PublicNewsDetail.php'; ?>
 
     <section class="view app-panel" id="view-dashboard" hidden>
       <div class="section-head">
         <h2>แดชบอร์ด</h2>
-        <button class="btn small" id="dashboard-ai-button" type="button">สรุปภาพรวม</button>
+        <button class="btn small" id="dashboard-ai-button" type="button">สร้างสรุปด้วย AI</button>
       </div>
       <div class="metric-grid">
         <div class="metric"><span>กีฬาเปิดใช้</span><strong id="d-active-sports">0</strong></div>
@@ -217,6 +220,13 @@ $csrf = Auth::csrfToken();
             <label>ประเภท <select name="type"><option value="team">ทีม</option><option value="individual">รายบุคคล</option></select></label>
             <label>เพศ <select name="gender"><option value="open">ทั่วไป</option><option value="male">ชาย</option><option value="female">หญิง</option><option value="mixed">ผสม</option></select></label>
           </div>
+          <label>รูปแบบการบันทึกผล <select name="scoring_type" id="sport-scoring-type" required>
+            <option value="" selected disabled>เลือกวิธีบันทึกและตัดสินผล</option>
+            <option value="SCORE">คะแนนสะสม (SCORE)</option><option value="SET">คะแนนเป็นเซต (SET)</option><option value="ROUND">คะแนนเป็นรอบ (ROUND)</option>
+            <option value="TIME">จับเวลา (TIME)</option><option value="DISTANCE">วัดระยะ (DISTANCE)</option><option value="HEIGHT">วัดความสูง (HEIGHT)</option>
+            <option value="JUDGED">คะแนนกรรมการ (JUDGED)</option><option value="TARGET">คะแนนเป้าหมาย (TARGET)</option><option value="COUNT">นับจำนวนครั้ง (COUNT)</option>
+            <option value="LOWEST">ตัวเลขต่ำสุด (LOWEST)</option><option value="DECISION">ชนะด้วยเงื่อนไข (DECISION)</option><option value="COMBINED">ผลรวมหลายรายการ (COMBINED)</option>
+          </select><small class="field-hint" id="sport-scoring-help">รูปแบบที่เลือกจะสร้างเป็นกติกาหลัก และแมตช์ใหม่จะใช้แบบบันทึกตามกติกานี้</small></label>
           <div class="form-row">
             <label>ผู้เล่นต่ำสุด <input type="number" name="min_players" min="1" value="1"></label>
             <label>ผู้เล่นสูงสุด <input type="number" name="max_players" min="1" value="1"></label>
@@ -243,8 +253,12 @@ $csrf = Auth::csrfToken();
           <label>ชื่อชุดกติกา <input name="name" value="กติกามาตรฐาน" required></label>
           <div class="form-row">
             <label>หมวดกีฬา <input name="category" placeholder="กีฬาทีม / กีฬาต่อสู้"></label>
-            <label>ประเภทผู้เล่น <select name="player_type"><option value="team">ทีม</option><option value="individual">บุคคล</option></select></label>
+            <label>ประเภทผู้เล่น <select name="player_type"><option value="team">ทีม</option><option value="individual">บุคคล</option><option value="pair">คู่</option><option value="relay_team">ทีมผลัด</option></select></label>
             <label>จำนวนผู้เล่น <input type="number" name="team_size" min="1" value="1"></label>
+          </div>
+          <div class="form-row">
+            <label>ประเภทการคิดผล <select name="scoring_type" id="scoring-type"><option value="SCORE">คะแนนสะสม (SCORE)</option><option value="SET">คะแนนเป็นเซต (SET)</option><option value="ROUND">คะแนนเป็นรอบ (ROUND)</option><option value="TIME">จับเวลา (TIME)</option><option value="DISTANCE">วัดระยะ (DISTANCE)</option><option value="HEIGHT">วัดความสูง (HEIGHT)</option><option value="JUDGED">คะแนนกรรมการ (JUDGED)</option><option value="TARGET">คะแนนเป้าหมาย (TARGET)</option><option value="COUNT">นับจำนวนครั้ง (COUNT)</option><option value="LOWEST">ตัวเลขต่ำสุด (LOWEST)</option><option value="DECISION">ชนะด้วยเงื่อนไข (DECISION)</option><option value="COMBINED">ผลรวมหลายรายการ (COMBINED)</option><optgroup data-legacy-modes hidden label="รูปแบบเดิมของแมตช์ที่มีอยู่"><option value="PERIOD_SCORE">คะแนนแยกช่วงเดิม</option><option value="END_SCORE">คะแนนแต่ละ End เดิม</option><option value="POINT_RANKING">คะแนนกรรมการเดิม</option><option value="COMBAT">กีฬาต่อสู้เดิม</option><option value="RACE_POSITION">อันดับเข้าเส้นชัยเดิม</option><option value="STROKE">Stroke เดิม</option><option value="MAP">Game / Map เดิม</option></optgroup></select></label>
+            <label class="checkbox-line"><input type="checkbox" name="include_in_standings" checked> นำผลไปรวมตารางคะแนนทีม</label>
           </div>
           <div class="form-row">
             <label>ระบบคะแนน <select name="scoring_mode"><option value="points">คะแนนรวม</option><option value="sets">เซต</option><option value="time">เวลา</option><option value="rank">อันดับ</option></select></label>
@@ -256,6 +270,24 @@ $csrf = Auth::csrfToken();
             <label>นาทีต่อช่วง <input type="number" name="period_minutes" min="0" value="45"></label>
             <label class="checkbox-line"><input type="checkbox" name="allow_draw"> อนุญาตผลเสมอ</label>
           </div>
+          <fieldset id="scoring-config-fields">
+            <legend>ค่ากติกาสำหรับการคำนวณผล</legend>
+            <div class="form-row">
+              <label data-config-for="SCORE PERIOD_SCORE">ปุ่มเพิ่มแต้ม <input name="quick_points" value="1" placeholder="1,2,3"><small class="field-hint">คั่นด้วยจุลภาค เช่น 1,2,3</small></label>
+              <label data-config-for="SET MAP">Best of <input type="number" name="best_of" min="1" value="3"></label>
+              <label data-config-for="SET">คะแนนชนะเซต <input type="number" name="points_to_win" min="0" value="21"></label>
+              <label data-config-for="SET">ชนะห่าง <input type="number" name="set_win_by" min="1" value="2"></label>
+              <label data-config-for="SET">คะแนนสูงสุด <input type="number" name="max_points" min="0" value="30"></label>
+            </div>
+            <div class="form-row">
+              <label data-config-for="SET">เซตปกติ <input type="number" name="normal_set_points" min="0" value="0"></label>
+              <label data-config-for="SET">เซตสุดท้าย <input type="number" name="final_set_points" min="0" value="0"></label>
+              <label data-config-for="ROUND END_SCORE">คะแนนเป้าหมาย (0 = ไม่กำหนด) <input type="number" name="target_score" min="0" value="0"></label>
+              <label data-config-for="JUDGED TARGET POINT_RANKING">รวมคะแนน <select name="aggregation"><option value="SUM">ผลรวม</option><option value="AVERAGE">ค่าเฉลี่ย</option><option value="DROP_HIGHEST_LOWEST">ตัดสูงสุดและต่ำสุด</option></select></label>
+              <label data-config-for="COUNT COMBINED">ผู้ชนะ <select name="numeric_win_by"><option value="HIGHEST">ค่ามากกว่า</option><option value="LOWEST">ค่าน้อยกว่า</option></select></label>
+            </div>
+          </fieldset>
+          <label>Scoring Config ขั้นสูง <textarea name="scoring_config" id="scoring-config-json" rows="5" placeholder='{"tie_break":["best_result","second_best_result"]}'></textarea><small class="field-hint">ใช้เพิ่มค่าเฉพาะทางในรูปแบบ JSON โดยค่าจากช่องด้านบนจะมีผลเหนือกว่า</small></label>
           <div class="form-row">
             <label class="checkbox-line"><input type="checkbox" name="overtime_enabled"> มีการต่อเวลา</label>
             <label>จำนวนช่วงต่อเวลา <input type="number" name="overtime_periods" min="1" value="2"></label>
@@ -370,200 +402,16 @@ $csrf = Auth::csrfToken();
     </section>
 
     <section class="view app-panel" id="view-matches" hidden>
-      <div class="section-head tournament-workspace-heading">
-        <div>
-          <p class="section-kicker">SPORT TOURNAMENT / ศูนย์จัดการข้อมูลภายใน</p>
-          <h2>จัดการทัวร์นาเมนต์</h2>
-          <p class="muted">ไม่มีระบบสมัคร — ข้อมูลทั้งหมดนำเข้าและจัดการโดยเจ้าหน้าที่</p>
-        </div>
-        <div class="tournament-workspace-controls">
-          <label>ทัวร์นาเมนต์
-            <select id="workflow-tournament-select" aria-label="เลือกทัวร์นาเมนต์"></select>
-          </label>
-          <button class="btn" id="workflow-settings-button" type="button"><i data-lucide="settings-2"></i><span>ตั้งค่าขั้นนี้</span></button>
-        </div>
-      </div>
-      <div class="tournament-context" id="tournament-context">
-        <div><strong id="workflow-tournament-name">ยังไม่มีทัวร์นาเมนต์</strong><span id="workflow-tournament-meta">สร้างทัวร์นาเมนต์เพื่อเริ่มจัดการข้อมูล</span></div>
-        <span class="workflow-status" id="workflow-tournament-status">ฉบับร่าง</span>
-      </div>
-      <div class="workflow-layout">
-        <nav class="workflow-steps" id="workflow-steps" aria-label="ลำดับการจัดการทัวร์นาเมนต์">
-          <div class="workflow-progress-summary">
-            <span id="workflow-progress-label">ความคืบหน้า 0 จาก 11 ขั้น</span>
-            <div class="workflow-progress-track" aria-hidden="true"><span id="workflow-progress-bar"></span></div>
-          </div>
-          <button type="button" data-workflow-step-button="1"><span>1</span><strong>ข้อมูลทัวร์นาเมนต์</strong><small>ชื่อ วันแข่งขัน และสถานะ</small></button>
-          <button type="button" data-workflow-step-button="2"><span>2</span><strong>กีฬาที่จัด</strong><small>เลือกจากข้อมูลกีฬากลาง</small></button>
-          <button type="button" data-workflow-step-button="3"><span>3</span><strong>กำหนดชุดกติกา</strong><small>เลือกกติกากลางที่ใช้</small></button>
-          <button type="button" data-workflow-step-button="4"><span>4</span><strong>สังกัดที่เข้าร่วม (ถ้ามี)</strong><small>ใช้เฉพาะงานที่มีสังกัด</small></button>
-          <button type="button" data-workflow-step-button="5"><span>5</span><strong>เพิ่มนักกีฬา</strong><small>เตรียมรายชื่อนักกีฬา</small></button>
-          <button type="button" data-workflow-step-button="6"><span>6</span><strong>สร้างทีม</strong><small>แยกทีมตามกีฬา</small></button>
-          <button type="button" data-workflow-step-button="7"><span>7</span><strong>จัดสมาชิกทีม</strong><small>เพิ่มนักกีฬาเข้าทีม</small></button>
-          <button type="button" data-workflow-step-button="8"><span>8</span><strong>ตรวจความพร้อม</strong><small>เช็กข้อมูลก่อนแข่งขัน</small></button>
-          <button type="button" data-workflow-step-button="9"><span>9</span><strong>ตารางแข่งขัน</strong><small>สร้างวันเวลาและคู่แข่ง</small></button>
-          <button type="button" data-workflow-step-button="10"><span>10</span><strong>บันทึกผล</strong><small>คะแนนและเหตุการณ์แข่งขัน</small></button>
-          <button type="button" data-workflow-step-button="11"><span>11</span><strong>ข่าวและรายงาน</strong><small>สรุปและเผยแพร่ผล</small></button>
-        </nav>
-        <div class="workflow-content">
-          <header class="workflow-stage-head">
-            <div>
-              <span class="workflow-step-count" id="workflow-step-count">ขั้นที่ 1 จาก 11</span>
-              <h3 id="workflow-step-title">ข้อมูลทัวร์นาเมนต์</h3>
-              <p id="workflow-step-description">สร้างหรือแก้ไขข้อมูลหลักของทัวร์นาเมนต์ก่อนเริ่มขั้นตอนถัดไป</p>
-            </div>
-            <span class="workflow-step-state" id="workflow-step-state">กำลังทำ</span>
-          </header>
-          <div class="workflow-notice" id="workflow-notice"><i data-lucide="info"></i><span>เลือกทัวร์นาเมนต์ แล้วดำเนินการตามลำดับทีละขั้น</span></div>
-          <div class="grid">
-        <section class="data-section workflow-stage" id="workflow-sports-section" data-workflow-step="2" hidden>
-          <div class="data-heading"><div><h2>กีฬาที่จัดในทัวร์นาเมนต์</h2><p class="muted">รายการนี้อ้างอิงจากข้อมูลทัวร์นาเมนต์ แก้ไขจากจุดเดียวเพื่อไม่ให้ข้อมูลซ้ำกัน</p></div><button class="btn" id="workflow-edit-sports" type="button"><i data-lucide="settings-2"></i><span>แก้ไขรายการกีฬา</span></button></div>
-          <div class="table-wrap" id="workflow-sports-table"></div>
-        </section>
-        <form class="card form-card" id="tournament-sport-setting-form">
-          <h2>กำหนดชุดกติกาที่ใช้</h2>
-          <p class="muted">เลือกจากชุดกติกากลางของกีฬานี้ ระบบจะเก็บเวอร์ชันที่เลือกไว้กับทัวร์นาเมนต์และแมตช์</p>
-          <input type="hidden" name="tournament_id">
-          <input type="hidden" name="sport_id">
-          <label>กีฬา <input name="sport_name" readonly></label>
-          <label>ชุดกติกาที่ใช้ <select name="rule_version_id" id="workflow-rule-version" required></select></label>
-          <label>สถานะการตั้งค่า <select name="status"><option value="pending">ยังตั้งค่าไม่ครบ</option><option value="ready">พร้อมใช้งาน</option><option value="locked">ล็อกการตั้งค่า</option></select></label>
-          <label>หมายเหตุ <textarea name="notes" placeholder="รายละเอียดเฉพาะของกีฬานี้ในทัวร์นาเมนต์"></textarea></label>
-          <div class="actions"><button class="btn primary" type="submit">ยืนยันชุดกติกาที่ใช้</button></div>
-        </form>
-        <section class="data-section workflow-stage" id="workflow-departments-section" data-workflow-step="4" hidden>
-          <div class="data-heading"><div><h2>สังกัดที่เข้าร่วม (ถ้ามี)</h2><p class="muted">ใช้เมื่อรายการแข่งขันต้องการแยกทีมตามหน่วยงาน ขั้นตอนนี้เว้นได้</p></div></div>
-          <div class="workflow-setting-layout">
-            <div>
-              <label>กีฬา <select id="workflow-department-sport"></select></label>
-              <div class="department-checklist" id="workflow-department-options"></div>
-              <div class="actions"><button class="btn primary" id="workflow-save-departments" type="button"><i data-lucide="check"></i><span>บันทึกสังกัดที่เข้าร่วม</span></button></div>
-            </div>
-            <aside class="workflow-summary" id="workflow-department-summary"></aside>
-          </div>
-        </section>
-        <section class="data-section workflow-stage" id="workflow-readiness-section" data-workflow-step="8" hidden>
-          <div class="data-heading"><div><h2>ตรวจสอบความพร้อม</h2><p class="muted">ตรวจข้อมูลที่ต้องมี ก่อนจัดสายและสร้างตารางแข่งขัน</p></div></div>
-          <div id="workflow-readiness"></div>
-        </section>
-        <section class="data-section workflow-stage" id="workflow-publish-section" data-workflow-step="11" hidden>
-          <div class="data-heading"><div><h2>ข่าวและรายงาน</h2><p class="muted">ใช้ข้อมูลการแข่งขันที่ยืนยันแล้วสำหรับประชาสัมพันธ์และจัดทำรายงาน</p></div></div>
-          <div class="workflow-final-actions">
-            <button class="workflow-action" type="button" data-workflow-view="news"><i data-lucide="newspaper"></i><strong>จัดทำข่าวประชาสัมพันธ์</strong><span>ร่างข่าว สร้างแบนเนอร์ และเผยแพร่</span></button>
-            <button class="workflow-action" type="button" data-workflow-view="reports"><i data-lucide="file-chart-column"></i><strong>จัดทำรายงาน</strong><span>สรุปผล KPI งบประมาณ และเอกสารประกอบ</span></button>
-          </div>
-        </section>
-        <form class="card form-card" id="tournament-form">
-          <h2>รายการแข่ง</h2>
-          <input type="hidden" name="id">
-          <label>ชื่อรายการ <input name="name" required></label>
-          <div class="form-row">
-            <label>โลโก้รายการแข่งขัน <input type="file" id="tournament-logo-file" accept="image/jpeg,image/png,image/webp"></label>
-            <label>ลิงก์โลโก้ <input name="logo_url"></label>
-          </div>
-          <div class="form-row tournament-meta-row">
-            <fieldset class="sport-picker-fieldset">
-              <legend>กีฬา <span class="required-mark">เลือกได้หลายรายการ</span></legend>
-              <div class="sport-picker-toolbar">
-                <label>ประเภท
-                  <select id="tournament-sport-type" aria-label="กรองประเภทกีฬา">
-                    <option value="">ทั้งหมด</option>
-                    <option value="team">ทีม</option>
-                    <option value="individual">บุคคล</option>
-                  </select>
-                </label>
-              </div>
-              <div class="sport-dropdown">
-                <button class="dropdown-button" id="tournament-sports-toggle" type="button" aria-expanded="false" aria-controls="tournament-sports-options"><span id="tournament-sports-summary">เลือกกีฬา</span><i data-lucide="chevron-down"></i></button>
-                <div id="tournament-sports-options" class="sport-picker" role="group" aria-label="เลือกกีฬาสำหรับทัวร์นาเมนท์" hidden></div>
-              </div>
-            </fieldset>
-            <label>ปี / รุ่น (ถ้ามี) <input name="academic_year" placeholder="เช่น 2026"></label>
-          </div>
-          <div class="form-row"><label>วันเริ่มการแข่งขัน <input type="date" name="starts_at"></label><label>วันสิ้นสุดการแข่งขัน <input type="date" name="ends_at"></label></div>
-          <div class="form-row">
-            <label>รูปแบบ <select name="format"><option value="knockout">knockout</option><option value="round_robin">round_robin</option><option value="group">group</option><option value="group_knockout">group_knockout</option></select></label>
-            <label>สถานะ <select name="status"><option value="draft">ฉบับร่าง</option><option value="data_entry">กำลังเตรียมข้อมูล</option><option value="ready">พร้อมแข่งขัน</option><option value="in_progress">กำลังแข่งขัน</option><option value="completed">จบการแข่งขัน</option><option value="cancelled">ยกเลิก</option></select></label>
-          </div>
-          <div class="actions"><button class="btn primary" type="submit">บันทึกรายการ</button><button class="btn ghost reset-form" type="button">ล้างฟอร์ม</button></div>
-        </form>
-        <div class="card wide"><h2>รายการแข่งทั้งหมด</h2><div class="table-wrap" id="tournaments-table"></div></div>
-        <section class="card full workflow-stage" id="fixture-generator" data-workflow-step="9" hidden>
-          <h2>จัดสายการแข่งขัน</h2>
-          <p class="muted">สร้างคู่ตามรูปแบบที่กำหนดในทัวร์นาเมนต์ แล้วกำหนดวัน เวลา และสนามในแต่ละแมตช์ รอบที่ยังไม่ทราบทีมจะแสดงเป็นช่องรอทีมเพื่อให้เจ้าหน้าที่เติมภายหลัง</p>
-          <div class="form-row"><label>กีฬา <select id="fixture-sport-select"></select></label><label>จำนวนกลุ่ม (สำหรับรอบแบ่งกลุ่ม) <input id="fixture-group-count" type="number" min="2" max="8" value="2"></label></div>
-          <button class="btn primary" id="generate-fixtures-button" type="button">สร้างสายการแข่งขัน</button>
-        </section>
-        <form class="card form-card" id="match-form">
-          <h2>แมตช์</h2>
-          <input type="hidden" name="id">
-          <label>รายการแข่ง <select name="tournament_id" id="match-tournament-select" required></select></label>
-          <div class="form-row">
-            <label>รอบ <input name="round_name" value="รอบแรก"></label>
-            <label>เลขแมตช์ <input name="match_number"></label>
-          </div>
-          <div class="form-row">
-            <label>ทีม 1 <select name="team1_id" id="match-team1-select"></select></label>
-            <label>ทีม 2 <select name="team2_id" id="match-team2-select"></select></label>
-          </div>
-          <label>วันเวลา <input type="datetime-local" name="scheduled_at"></label>
-          <label>สนาม <input name="venue"></label>
-          <label>ผู้ตัดสิน <input name="referee"></label>
-          <label>สถานะ <select name="status"><option value="scheduled">scheduled</option><option value="live">live</option><option value="completed">completed</option><option value="postponed">postponed</option><option value="cancelled">cancelled</option></select></label>
-          <div class="actions"><button class="btn primary" type="submit">บันทึกแมตช์</button><button class="btn ghost reset-form" type="button">ล้างฟอร์ม</button></div>
-        </form>
-        <form class="card form-card" id="result-form">
-          <h2>บันทึกผล</h2>
-          <label>แมตช์ <select name="match_id" id="result-match-select" required></select></label>
-          <p class="muted" id="result-mode-help">ระบบจะเปลี่ยนรูปแบบผลตามชุดกติกาของกีฬาที่เลือก</p>
-          <div class="form-row">
-            <label><span id="result-side1-label">ผล/คะแนนทีม 1</span> <input type="number" name="team1_score" min="0" required></label>
-            <label><span id="result-side2-label">ผล/คะแนนทีม 2</span> <input type="number" name="team2_score" min="0" required></label>
-          </div>
-          <label>ผู้ชนะจาก Tie-break <select name="winner_team_id" id="result-winner-select"><option value="">ไม่ระบุ / เสมอ</option></select></label>
-          <button class="btn primary" type="submit">บันทึกผล</button>
-        </form>
-        <div class="card full"><h2>แมตช์ทั้งหมด</h2><div class="table-wrap" id="matches-table"></div></div>
-        <section class="match-center full" id="match-center-panel">
-          <div class="data-heading"><div><p class="section-kicker">LIVE MATCH CENTER</p><h2>ควบคุมการแข่งขันและบันทึกเหตุการณ์</h2></div><select id="match-center-select" aria-label="เลือกแมตช์"></select></div>
-          <div id="match-center-empty" class="empty-state">เลือกแมตช์เพื่อเริ่มบันทึกเวลาและเหตุการณ์</div>
-          <div id="match-center-content" hidden>
-            <div class="match-center-summary"><span class="badge" id="center-status">รอแข่งขัน</span><span id="center-rule-summary">ระบบคะแนนรวม</span></div>
-            <div class="scoreboard"><div id="center-team1">ทีม 1</div><strong id="center-score">0 - 0</strong><div id="center-team2">ทีม 2</div></div>
-            <div class="match-rosters" aria-label="รายชื่อนักกีฬาในแมตช์">
-              <section><h3 id="center-roster1-title">รายชื่อนักกีฬาทีม 1</h3><div id="center-roster1" class="match-roster-list"></div></section>
-              <section><h3 id="center-roster2-title">รายชื่อนักกีฬาทีม 2</h3><div id="center-roster2" class="match-roster-list"></div></section>
-            </div>
-            <div class="clock-bar"><strong id="center-clock">00:00</strong><span id="center-period">ช่วงที่ 1</span><div class="actions"><button class="btn primary" id="clock-start" type="button"><i data-lucide="play"></i><span>เริ่มการแข่งขัน</span></button><button class="btn" id="clock-pause" type="button"><i data-lucide="pause"></i><span>พัก</span></button><button class="btn" id="clock-next" type="button">ช่วงถัดไป</button><button class="btn" id="clock-overtime" type="button">ต่อเวลา</button><button class="btn danger" id="match-finish" type="button"><i data-lucide="flag"></i><span>จบการแข่งขัน</span></button></div></div>
-            <form id="match-event-form" class="event-entry">
-              <input type="hidden" name="match_id">
-              <label>เหตุการณ์ <select name="event_type" id="event-type" required></select></label>
-              <label>ทีม <select name="team_id" id="event-team"></select></label>
-              <label>นักกีฬา <select name="student_id" id="event-student"></select></label>
-              <label>แต้ม <input type="number" name="points" id="event-points"></label>
-              <label>ทดเวลา (นาที) <input type="number" name="added_time" min="0" value="0"></label>
-              <label class="event-note">หมายเหตุ <input name="note"></label>
-              <button class="btn primary" type="submit"><i data-lucide="plus"></i><span>บันทึกเหตุการณ์</span></button>
-              <p class="event-entry-help" id="event-entry-help">เริ่มการแข่งขันก่อนบันทึกคะแนนหรือเหตุการณ์</p>
-            </form>
-            <div class="table-wrap" id="match-events-table"></div>
-          </div>
-        </section>
-        <section class="data-section full"><div class="data-heading"><h2>ตารางคะแนน</h2><select id="standings-tournament-filter" aria-label="เลือกรายการแข่งขัน"></select></div><div class="table-wrap" id="standings-table"></div></section>
-          </div>
-          <footer class="workflow-navigation" aria-label="ไปยังขั้นตอนก่อนหน้าหรือถัดไป">
-            <button class="btn ghost" id="workflow-previous-button" type="button"><i data-lucide="arrow-left"></i><span>ย้อนกลับ</span></button>
-            <span id="workflow-navigation-hint">บันทึกข้อมูลในขั้นนี้ให้เรียบร้อย แล้วไปขั้นถัดไป</span>
-            <button class="btn primary" id="workflow-next-button" type="button"><span>ขั้นถัดไป</span><i data-lucide="arrow-right"></i></button>
-          </footer>
-        </div>
-      </div>
+      <?php require __DIR__ . '/pages/tournaments/TournamentList.php'; ?>
+      <?php require __DIR__ . '/pages/tournaments/TournamentCreate.php'; ?>
+      <?php require __DIR__ . '/pages/tournaments/TournamentDashboard.php'; ?>
+      <?php require __DIR__ . '/components/tournaments/TournamentForm.php'; ?>
     </section>
 
     <section class="view official-console" id="view-official" hidden>
       <header class="official-console-head">
-        <div><h1>ศูนย์ควบคุมการแข่งขัน</h1><p>บันทึกคะแนน เหตุการณ์ และตรวจสอบนักกีฬาประจำแมตช์</p></div>
-        <div class="official-user-mark"><i data-lucide="clipboard-pen-line"></i><span>ผู้บันทึกผลการแข่งขัน</span></div>
+        <div><h1>เลือกหน้าบันทึกการแข่งขัน</h1><p>ระบบจะเปิดหน้าเฉพาะตามรูปแบบกติกาที่ผูกกับแมตช์</p></div>
+        <div class="official-head-actions"><button class="btn" id="official-back-button" type="button" aria-label="กลับหน้าจัดการ"><i data-lucide="layout-dashboard"></i><span>กลับหน้าจัดการ</span></button><div class="official-user-mark"><i data-lucide="clipboard-pen-line"></i><span>ผู้บันทึกผลการแข่งขัน</span></div></div>
       </header>
       <div class="official-console-layout">
         <aside class="official-match-rail">
@@ -576,115 +424,17 @@ $csrf = Auth::csrfToken();
           <div class="official-match-list" id="official-completed-matches"></div>
         </aside>
         <div class="official-workbench" id="official-center-host">
-          <div class="empty-state">เลือกแมตช์จากรายการด้านซ้ายเพื่อเริ่มปฏิบัติงาน</div>
+          <div class="official-routing-empty"><i data-lucide="mouse-pointer-click"></i><h2>เลือกแมตช์จากรายการ</h2><p>แมตช์ SCORE และ SET จะเปิดหน้าบันทึกแยกทันที ส่วนรูปแบบอื่นจะแจ้งว่ายังอยู่ระหว่างจัดทำ</p></div>
         </div>
-        <aside class="official-event-rail">
-          <div class="official-panel-heading"><h2>เหตุการณ์ล่าสุด</h2><span id="official-event-count">0 รายการ</span></div>
-          <div id="official-event-feed" class="official-event-feed"><div class="empty-state">ยังไม่มีเหตุการณ์</div></div>
-        </aside>
       </div>
     </section>
 
-    <section class="view app-panel" id="view-news" hidden>
-      <div class="grid">
-        <form class="card form-card wide" id="news-form">
-          <h2>ข่าวประชาสัมพันธ์</h2>
-          <input type="hidden" name="id">
-          <label>เริ่มจากเทมเพลตข่าว <select id="news-template-select"><option value="">เลือกเทมเพลต</option><option value="announcement">ประกาศทั่วไป</option><option value="preview">ก่อนการแข่งขัน</option><option value="result">สรุปผลการแข่งขัน</option><option value="honor">รางวัลเกียรติยศ</option></select></label>
-          <section class="ai-news-builder" aria-labelledby="ai-news-title">
-            <div class="tool-heading">
-              <div>
-                <span class="tool-kicker">AI NEWSROOM</span>
-                <h3 id="ai-news-title">ผู้ช่วยเขียนข่าวกีฬา</h3>
-              </div>
-              <span class="badge" id="news-ai-status">พร้อมสร้างร่าง</span>
-            </div>
-            <div class="form-row">
-              <label>กีฬา <select id="news-ai-sport"><option value="">ทุกกีฬา</option></select></label>
-              <label>รายการแข่งขัน <select id="news-ai-tournament"><option value="">ทุกรายการ</option></select></label>
-            </div>
-            <label>แมตช์อ้างอิง <select id="news-ai-match"><option value="">เลือกแมตช์ล่าสุดอัตโนมัติ</option></select></label>
-            <div class="form-row">
-              <label>รูปแบบข่าว
-                <select id="news-ai-story-type">
-                  <option value="result">สรุปผลการแข่งขัน</option>
-                  <option value="preview">ประชาสัมพันธ์ก่อนแข่ง</option>
-                  <option value="highlight">ไฮไลต์และความประทับใจ</option>
-                </select>
-              </label>
-              <label>โทนการเขียน
-                <select id="news-ai-tone">
-                  <option value="official">ทางการ กระชับ</option>
-                  <option value="energetic">สนุก เร้าใจ</option>
-                  <option value="inspiring">สร้างแรงบันดาลใจ</option>
-                </select>
-              </label>
-            </div>
-            <label>ประเด็นที่ต้องการเน้น <textarea id="news-ai-instruction" placeholder="เช่น ชื่นชมนักกีฬา บรรยากาศการแข่งขัน หรือเชิญชวนติดตามรอบถัดไป"></textarea></label>
-            <div class="ai-builder-actions">
-              <button class="btn primary" id="news-ai-button" type="button"><i data-lucide="sparkles"></i><span>สร้างร่างด้วย AI</span></button>
-            </div>
-          </section>
-          <div class="form-row">
-            <label>ประเภท <select name="news_type"><option value="general">ข่าวสารทั่วไป</option><option value="department">เนื้อหาหน่วย/สาขา</option><option value="hall_of_fame">Hall of Fame</option></select></label>
-            <label>สาขา <select name="department_code" class="department-select optional"><option value="">ไม่ระบุ</option></select></label>
-          </div>
-          <fieldset><legend>เชื่อมโยงข่าวกับระบบ</legend><div class="form-row"><label>กีฬา <select name="sport_id" class="sport-select optional"></select></label><label>รายการแข่งขัน <select name="tournament_id" class="tournament-select optional"></select></label><label>ทีม <select name="team_id" id="news-team-link"></select></label><label>แมตช์ <select name="match_id" id="news-match-link"></select></label></div></fieldset>
-          <label>หัวข้อ <input name="title" required></label>
-          <label>ลิงก์ย่อ <input name="slug"></label>
-          <label>คำโปรย <textarea name="excerpt"></textarea></label>
-          <label>เนื้อหา <textarea name="body" class="tall"></textarea></label>
-          <label>ลิงก์เว็บไซต์ที่เกี่ยวข้อง <input name="source_url" type="url" inputmode="url" placeholder="https://example.com"></label>
-          <div class="form-row">
-            <label>รูปปก <input type="file" id="news-file" accept="image/*"></label>
-            <label>ลิงก์รูป <input name="cover_image_url" id="news-cover-url"></label>
-          </div>
-          <div class="cover-tools">
-            <div class="cover-thumb" id="news-cover-preview"><i data-lucide="image"></i><span>ยังไม่มีรูปปก</span></div>
-            <button class="btn" id="banner-open-button" type="button"><i data-lucide="layout-template"></i><span>สร้างแบนเนอร์</span></button>
-          </div>
-          <div class="form-row">
-            <label>สถานะ <select name="status"><option value="draft">draft</option><option value="published">published</option><option value="archived">archived</option></select></label>
-            <label class="checkbox-line"><input type="checkbox" name="is_pinned"> ปักหมุด</label>
-          </div>
-          <div class="actions"><button class="btn primary" type="submit">บันทึกข่าว</button><button class="btn ghost reset-form" type="button">ล้างฟอร์ม</button></div>
-        </form>
-        <div class="card full"><h2>ข่าวทั้งหมด</h2><div class="table-wrap" id="news-table"></div></div>
-      </div>
-    </section>
+<?php require __DIR__ . '/pages/news/NewsManagement.php'; ?>
+<?php require __DIR__ . '/pages/news/NewsEditor.php'; ?>
+<?php require __DIR__ . '/pages/news/NewsPreview.php'; ?>
+<?php require __DIR__ . '/components/news/banner-studio.php'; ?>
 
-    <section class="view app-panel" id="view-users" hidden>
-      <div class="grid">
-        <div class="card full"><h2>การรับทีมงาน</h2><label class="checkbox-line"><input id="staff-invites-enabled" type="checkbox"> เปิดใช้ลิงก์คำเชิญทีมงาน</label><p class="muted">เมื่อปิด ลิงก์คำเชิญที่ยังไม่หมดอายุจะใช้ไม่ได้จนกว่าจะเปิดอีกครั้ง</p></div>
-        <form class="card form-card" id="invite-form">
-          <h2>เชิญทีมงานใหม่</h2>
-          <p class="muted">ลิงก์คำเชิญใช้ได้ 45 นาที และใช้ได้ครั้งเดียว</p>
-          <label>อีเมล <input type="email" name="email" required></label>
-          <label>ชื่อ <input name="name"></label>
-          <label>บทบาท <select name="role" id="invite-role-select" required></select></label>
-          <label>สาขา <select name="department_code" class="department-select optional"><option value="">ไม่จำกัด</option></select></label>
-          <label>รหัสกีฬาที่รับผิดชอบ <input name="sport_ids" placeholder="1,2"></label>
-          <div class="actions"><button class="btn primary" type="submit">สร้างลิงก์เชิญ</button><button class="btn ghost reset-form" type="button">ล้างฟอร์ม</button></div>
-          <div class="invite-link-box" id="invite-link-box" hidden></div>
-        </form>
-        <form class="card form-card" id="user-form">
-          <h2>สมาชิกผู้ดูแล</h2>
-          <input type="hidden" name="id">
-          <label>อีเมล <input type="email" name="email" required></label>
-          <label>ชื่อ <input name="name"></label>
-          <label>รหัสผ่านใหม่ <input type="password" name="password" autocomplete="new-password" minlength="8"></label>
-          <label>ยืนยันรหัสผ่านใหม่ <input type="password" name="password_confirm" autocomplete="new-password" minlength="8"></label>
-          <label>บทบาท <select name="role" id="user-role-select" required></select></label>
-          <label>สาขา <select name="department_code" class="department-select optional"><option value="">ไม่จำกัด</option></select></label>
-          <label>รหัสกีฬาที่รับผิดชอบ <input name="sport_ids" placeholder="1,2"></label>
-          <label class="checkbox-line"><input type="checkbox" name="is_active" checked> เปิดใช้งาน</label>
-          <div class="actions"><button class="btn primary" type="submit">บันทึกสมาชิก</button><button class="btn ghost reset-form" type="button">ล้างฟอร์ม</button></div>
-        </form>
-        <div class="card wide"><h2>สมาชิกและสิทธิ์</h2><div class="table-wrap" id="users-table"></div></div>
-        <div class="card wide"><h2>คำเชิญที่สร้างไว้</h2><div class="table-wrap" id="invites-table"></div></div>
-        <div class="card full"><div class="section-head"><h2>ประวัติการใช้งานหลังบ้าน</h2><input id="audit-search" type="search" placeholder="ค้นหาอีเมล การดำเนินการ หรือข้อมูล" aria-label="ค้นหา Audit log"></div><div class="table-wrap" id="audit-full-table"></div></div>
-      </div>
-    </section>
+    <?php require __DIR__ . '/pages/admin-users/users.php'; ?>
 
     <section class="view app-panel" id="view-invite-accept" hidden>
       <div class="grid invite-accept-grid">
@@ -701,170 +451,6 @@ $csrf = Auth::csrfToken();
       </div>
     </section>
 
-    <section class="view app-panel" id="view-reports" hidden>
-      <div class="report-dashboard" id="report-dashboard">
-        <div class="section-head report-page-head">
-          <div><p class="section-kicker">รายงานจากข้อมูลการแข่งขัน</p><h2>รายงานผลกีฬา</h2></div>
-          <div class="actions">
-            <span class="badge"><i data-lucide="database"></i> ใช้ข้อมูลจริงจากระบบ</span>
-            <button class="btn primary" id="report-create-button" type="button"><i data-lucide="file-chart-column"></i><span>สรุปผลรายงาน</span></button>
-          </div>
-        </div>
-        <div class="report-summary-strip" id="report-summary-strip"></div>
-        <div class="report-filters" aria-label="ตัวกรองรายงาน">
-          <label>ค้นหา<input id="report-search" type="search" placeholder="ชื่อรายงาน ผู้จัดทำ หรือหน่วยงาน"></label>
-          <label>ปี / รุ่น<select id="report-year-filter"><option value="">ทุกปี</option></select></label>
-          <label>หมวดหมู่<select id="report-category-filter"><option value="">ทุกหมวดหมู่</option></select></label>
-          <label>ประเภทแบบฟอร์ม<select id="report-template-filter"><option value="">ทุกแบบฟอร์ม</option></select></label>
-          <label>สถานะ<select id="report-status-filter"><option value="">ทุกสถานะ</option><option value="draft">แบบร่าง</option><option value="review">รอตรวจสอบ</option><option value="completed">เสร็จสมบูรณ์</option><option value="published">เผยแพร่แล้ว</option></select></label>
-        </div>
-        <div class="table-wrap data-table" id="reports-table"></div>
-      </div>
-
-      <div class="report-builder" id="report-builder" hidden>
-        <div class="section-head report-page-head">
-          <div><p class="section-kicker">รายงานทางการจากข้อมูลระบบ</p><h2 id="report-builder-title">สรุปผลรายงาน</h2></div>
-          <button class="btn ghost" id="report-back-button" type="button"><i data-lucide="arrow-left"></i><span>กลับหน้ารายงาน</span></button>
-        </div>
-        <ol class="report-stepper" id="report-stepper" aria-label="ขั้นตอนการสร้างรายงาน">
-          <li class="active" data-report-step-indicator="3"><span>1</span>กำหนดขอบเขตและสรุปผล</li>
-          <li data-report-step-indicator="4"><span>2</span>ตรวจสอบและส่งออก PDF</li>
-        </ol>
-
-        <form id="report-editor-form">
-          <input type="hidden" name="id">
-          <input type="hidden" name="category_id">
-          <input type="hidden" name="template_id">
-          <input type="hidden" name="status" value="draft">
-
-          <section class="report-step" data-report-step="1">
-            <div class="report-step-heading"><h3>เลือกหมวดหมู่รายงาน</h3><p>เลือกวัตถุประสงค์หลักของรายงานฉบับนี้</p></div>
-            <div class="report-choice-grid" id="report-category-choices"></div>
-          </section>
-
-          <section class="report-step" data-report-step="2" hidden>
-            <div class="report-step-heading"><h3>เลือกประเภทแบบฟอร์ม</h3><p id="report-selected-category-label"></p></div>
-            <div class="report-choice-grid" id="report-template-choices"></div>
-          </section>
-
-          <section class="report-step" data-report-step="3" hidden>
-            <section class="report-summary-generator" aria-labelledby="report-summary-generator-title">
-              <div>
-                <span class="report-summary-icon"><i data-lucide="database-zap"></i></span>
-                <div><h3 id="report-summary-generator-title">สรุปผลจากข้อมูลในระบบ</h3><p>ระบบจะรวบรวมกีฬา ทีม นักกีฬา การแข่งขัน ตารางคะแนน และข่าว แล้วเรียบเรียงลงในรูปแบบรายงานทางการตายตัว</p></div>
-              </div>
-              <div class="report-summary-form" id="report-form">
-                <button class="btn primary" id="report-summary-button" type="button"><i data-lucide="file-check-2"></i><span>สรุปผลรายงาน</span></button>
-              </div>
-              <div class="report-output" id="report-output">เลือกขอบเขตรายการแข่งขันด้านล่าง หรือใช้ข้อมูลทั้งหมด แล้วกด “สรุปผลรายงาน” ระบบจะเติมข้อมูลลงในเล่มรายงานให้อัตโนมัติ</div>
-            </section>
-            <div class="report-form-section" data-report-section="general">
-              <h3><span>1</span>ข้อมูลพื้นฐานของรายงาน</h3>
-              <div class="report-form-grid">
-                <label class="span-2">ชื่อรายงาน <span class="required">*</span><input name="title" maxlength="255" required></label>
-                <label>ชื่อโครงการ/กิจกรรม<input name="project_name"></label>
-                <label>วันที่ดำเนินการ<input name="operation_date" type="date"></label>
-                <label>สถานที่<input name="location"></label>
-                <label>ปี / รุ่น (ถ้ามี)<input name="academic_year"></label>
-                <label>ปีงบประมาณ<input name="fiscal_year"></label>
-                <label>ภาคการศึกษา<select name="semester"><option value="">ไม่ระบุ</option><option value="1">ภาคการศึกษาที่ 1</option><option value="2">ภาคการศึกษาที่ 2</option><option value="summer">ภาคฤดูร้อน</option></select></label>
-                <label>วันที่เริ่มต้น<input name="start_date" type="date"></label>
-                <label>วันที่สิ้นสุด<input name="end_date" type="date"></label>
-                <label>วันที่จัดทำ<input name="report_date" type="date" required></label>
-                <label class="span-2">รายการแข่งขันที่ใช้อ้างอิง<select name="tournament_id" id="report-tournament-select"><option value="">ข้อมูลการแข่งขันทั้งหมด</option></select></label>
-                <label>หน่วยงาน<input name="department"></label>
-                <label>ผู้รับผิดชอบ<input name="responsible_person"></label>
-                <label class="span-2">ผู้จัดทำรายงาน <span class="required">*</span><input name="prepared_by" required></label>
-              </div>
-            </div>
-
-            <div class="report-form-section" data-report-section="principles">
-              <h3><span>2</span>หลักการและวัตถุประสงค์</h3>
-              <div class="report-form-grid">
-                <label class="span-2">หลักการและเหตุผล<textarea name="rationale"></textarea></label>
-                <label>วัตถุประสงค์<textarea name="objectives"></textarea></label>
-                <label>กลุ่มเป้าหมาย<textarea name="target_group"></textarea></label>
-              </div>
-            </div>
-
-            <div class="report-form-section" data-report-section="performance">
-              <h3><span>3</span>ข้อมูลการดำเนินงาน</h3>
-              <div class="report-data-source"><i data-lucide="database"></i><div><strong>เชื่อมโยงข้อมูลกีฬาเดิม</strong><p id="report-source-summary">ระบบจะคำนวณจำนวนกีฬา การแข่งขัน หน่วยงาน และนักกีฬาให้อัตโนมัติ</p></div></div>
-              <label>รายละเอียดการดำเนินงาน<textarea name="operation_detail"></textarea></label>
-            </div>
-
-            <div class="report-form-section" data-report-section="sports_results">
-              <h3><span>4</span>ผลการแข่งขัน</h3>
-              <p class="muted">ผลการแข่งขันจะดึงจากรายการแข่งขันที่เลือกโดยตรง และไม่สร้างข้อมูลซ้ำ</p>
-              <div class="report-inline-preview" id="report-results-preview"></div>
-            </div>
-
-            <div class="report-form-section" data-report-section="kpi">
-              <div class="report-section-title"><h3><span>5</span>ผลการดำเนินงานตามตัวชี้วัด</h3><button class="btn small" id="report-add-kpi" type="button"><i data-lucide="plus"></i><span>เพิ่ม KPI</span></button></div>
-              <div class="kpi-editor" id="report-kpi-editor"></div>
-            </div>
-
-            <div class="report-form-section" data-report-section="budget">
-              <h3><span>6</span>งบประมาณ</h3>
-              <div class="report-form-grid budget-fields">
-                <label>งบประมาณที่ได้รับ (บาท)<input name="budget_allocated" type="number" min="0" step="0.01" value="0"></label>
-                <label>งบประมาณที่ใช้จริง (บาท)<input name="budget_actual" type="number" min="0" step="0.01" value="0"></label>
-                <label>งบประมาณคงเหลือ<input name="budget_remaining" readonly value="0.00"></label>
-                <label>ร้อยละการใช้จ่าย<input name="budget_usage" readonly value="0.00"></label>
-                <label class="span-2">หมายเหตุ<textarea name="budget_note"></textarea></label>
-              </div>
-            </div>
-
-            <div class="report-form-section" data-report-section="outcomes">
-              <h3><span>7</span>ผลที่ได้รับ</h3>
-              <div class="report-form-grid">
-                <label>ผลการดำเนินงาน<textarea name="performance_result"></textarea></label>
-                <label>ผลลัพธ์ที่เกิดขึ้นและประโยชน์ที่ได้รับ<textarea name="benefits"></textarea></label>
-                <label class="span-2">ผลต่อผู้เข้าร่วม/นักกีฬา<textarea name="participant_impact"></textarea></label>
-              </div>
-            </div>
-
-            <div class="report-form-section" data-report-section="problems">
-              <h3><span>8</span>ปัญหาและข้อเสนอแนะ</h3>
-              <div class="report-form-grid">
-                <label>ปัญหาและอุปสรรค<textarea name="obstacles"></textarea></label>
-                <label>วิธีการแก้ไข<textarea name="solutions"></textarea></label>
-                <label class="span-2">ข้อเสนอแนะและแนวทางพัฒนาครั้งต่อไป<textarea name="recommendations"></textarea></label>
-              </div>
-            </div>
-
-            <div class="report-form-section" data-report-section="executive">
-              <h3><span>9</span>สรุปสำหรับผู้บริหาร</h3>
-              <label>บทสรุปผู้บริหาร<textarea name="executive_summary" class="tall" placeholder="สรุปสาระสำคัญ ผลการดำเนินงาน และประเด็นที่ผู้บริหารควรทราบ"></textarea></label>
-            </div>
-
-            <div class="report-form-section" data-report-section="attachments">
-              <h3><span>10</span>หลักฐานประกอบ</h3>
-              <div class="report-form-grid">
-                <label>เลือกไฟล์<input id="report-attachment-file" type="file" accept=".jpg,.jpeg,.png,.webp,.pdf,.doc,.docx" multiple></label>
-                <label>หมายเหตุไฟล์แนบ<input id="report-attachment-note"></label>
-              </div>
-              <p class="muted">รองรับ JPG, PNG, WEBP, PDF, DOC และ DOCX ขนาดไม่เกิน 8MB ต่อไฟล์ ระบบจะอัปโหลดหลังบันทึกรายงาน</p>
-              <div id="report-attachments-list"></div>
-            </div>
-
-          </section>
-
-          <section class="report-step" data-report-step="4" hidden>
-            <div class="report-step-heading"><h3>ตัวอย่างรายงานแบบเป็นเล่ม</h3><p>ตรวจสอบรูปแบบเอกสารทางการก่อนดาวน์โหลดไฟล์ PDF</p></div>
-            <div class="report-preview-shell" id="stored-report-preview"></div>
-          </section>
-
-          <div class="report-wizard-actions">
-            <button class="btn ghost" id="report-prev-step" type="button" hidden><i data-lucide="arrow-left"></i><span>ย้อนกลับ</span></button>
-            <div class="actions">
-              <button class="btn" id="report-save-draft" type="button" hidden><i data-lucide="save"></i><span>บันทึกแบบร่าง</span></button>
-              <button class="btn primary" id="report-next-step" type="button"><span>ตรวจสอบรูปเล่ม</span><i data-lucide="arrow-right"></i></button>
-            </div>
-          </div>
-        </form>
-      </div>
-    </section>
   </main>
 
   <footer class="site-footer">
@@ -916,60 +502,27 @@ $csrf = Auth::csrfToken();
     </form>
   </dialog>
 
-  <dialog id="banner-dialog" class="banner-dialog" aria-labelledby="banner-title">
-    <header class="modal-head">
-      <div class="modal-icon"><i data-lucide="layout-template"></i></div>
-      <div><span class="tool-kicker">BANNER STUDIO</span><h2 id="banner-title">ออกแบบรูปปกข่าว</h2></div>
-      <button class="btn icon-button" id="banner-close-button" type="button" aria-label="ปิด" title="ปิด"><i data-lucide="x"></i></button>
-    </header>
-    <div class="banner-studio">
-      <aside class="banner-controls">
-        <label>เทมเพลต
-          <select id="banner-template">
-            <option value="matchday">Match Day</option>
-            <option value="result">Match Result</option>
-            <option value="spotlight">Sport Spotlight</option>
-          </select>
-        </label>
-        <label>รูปการแข่งขัน <input id="banner-image-file" type="file" accept="image/jpeg,image/png,image/webp"></label>
-        <div class="form-row compact-row">
-          <label>สีกิจกรรม <input id="banner-accent" type="color" value="#f4c400"></label>
-          <label>การจัดข้อความ
-            <select id="banner-align"><option value="left">ชิดซ้าย</option><option value="center">กึ่งกลาง</option><option value="right">ชิดขวา</option></select>
-          </label>
+  <dialog id="role-switch-dialog" class="role-switch-dialog" aria-labelledby="role-switch-title">
+    <section class="role-switch-panel">
+      <header class="role-switch-head">
+        <div class="role-switch-icon"><i data-lucide="users-round"></i></div>
+        <div>
+          <p class="eyebrow">PRESENTATION MODE</p>
+          <h2 id="role-switch-title">เลือกมุมมองตามบทบาท</h2>
+          <p>สาธิตเมนูและความสามารถที่แต่ละ Role มองเห็น โดยไม่เปลี่ยนสิทธิ์บัญชีจริง</p>
         </div>
-        <label>กีฬา <input id="banner-sport" maxlength="80" placeholder="ชื่อกีฬา"></label>
-        <label>หัวเรื่อง <textarea id="banner-headline" maxlength="180"></textarea></label>
-        <label>รายการ / รายละเอียด <textarea id="banner-subtitle" maxlength="220"></textarea></label>
-        <div class="banner-control-group">
-          <strong>จัดวางรูปภาพ</strong>
-          <label>ขนาดภาพ <input id="banner-image-scale" type="range" min="100" max="220" value="100"></label>
-          <div class="form-row compact-row">
-            <label>แนวนอน <input id="banner-image-x" type="range" min="0" max="100" value="50"></label>
-            <label>แนวตั้ง <input id="banner-image-y" type="range" min="0" max="100" value="50"></label>
-          </div>
-        </div>
-        <div class="banner-control-group">
-          <strong>จัดวางข้อความ</strong>
-          <label>องค์ประกอบ
-            <select id="banner-active-element"><option value="sport">ชื่อกีฬา</option><option value="headline">หัวเรื่อง</option><option value="subtitle">รายละเอียด</option></select>
-          </label>
-          <div class="form-row compact-row">
-            <label>แนวนอน <input id="banner-element-x" type="range" min="3" max="97" value="8"></label>
-            <label>แนวตั้ง <input id="banner-element-y" type="range" min="5" max="95" value="34"></label>
-          </div>
-        </div>
-      </aside>
-      <section class="banner-workspace" aria-label="พื้นที่ออกแบบแบนเนอร์">
-        <div class="canvas-shell"><canvas id="banner-canvas" width="1200" height="675" tabindex="0" aria-label="ตัวอย่างแบนเนอร์ สามารถลากข้อความเพื่อจัดตำแหน่งได้"></canvas></div>
-        <p class="canvas-hint">ลากข้อความบนภาพเพื่อจัดตำแหน่ง หรือใช้ตัวเลื่อนสำหรับปรับอย่างละเอียด</p>
-        <div class="banner-actions">
-          <button class="btn" id="banner-download-button" type="button"><i data-lucide="download"></i><span>ดาวน์โหลด PNG</span></button>
-          <button class="btn primary" id="banner-use-button" type="button"><i data-lucide="image-check"></i><span>ใช้เป็นรูปปกข่าว</span></button>
-        </div>
-      </section>
-    </div>
+        <button class="btn icon-button" id="role-switch-close" type="button" aria-label="ปิด" title="ปิด"><i data-lucide="x"></i></button>
+      </header>
+      <div class="role-switch-status" id="role-switch-status"></div>
+      <div class="role-switch-grid" id="role-switch-grid"></div>
+      <footer class="role-switch-foot">
+        <span><i data-lucide="shield-check"></i> API และข้อมูลยังใช้สิทธิ์ System Admin เดิม โหมดนี้ใช้สำหรับนำเสนอหน้าจอเท่านั้น</span>
+        <button class="btn" id="role-switch-reset" type="button">กลับมุมมองจริง</button>
+      </footer>
+    </section>
   </dialog>
+
+
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
   <script>
@@ -982,8 +535,15 @@ $csrf = Auth::csrfToken();
   <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/lucide.min.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
   <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/workspace.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
   <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/banner-studio.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
-  <?php $html2pdfAsset = is_file(PUBLIC_PATH . '/assets/html2pdf.bundle.min.js') ? 'public/assets/html2pdf.bundle.min.js' : 'node_modules/html2pdf.js/dist/html2pdf.bundle.min.js'; ?>
-  <script src="<?= htmlspecialchars(versioned_asset_url($html2pdfAsset), ENT_QUOTES, 'UTF-8') ?>"></script>
+  <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/modules/tournaments.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
+  <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/modules/admin-users.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
+  <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/modules/news/news-ai.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
+  <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/modules/news/news-management.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
+  <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/modules/news/news-public.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
+  <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/modules/news/news-competition.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
+  <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/modules/news/news-editor.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
+  <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/modules/news/news-drafts.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
+  <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/modules/news/news-honor.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
   <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/app.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
 </body>
 </html>

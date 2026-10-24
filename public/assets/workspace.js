@@ -9,9 +9,8 @@ const workspace = {
     'tournament-form': ['รายการแข่งขัน', 'tournaments-table', 'medal'],
     'tournament-sport-setting-form': ['กติกาในทัวร์นาเมนต์', 'workflow-sports-table', 'settings-2'],
     'match-form': ['แมตช์', 'matches-table', 'calendar-days'],
-    'result-form': ['ผลการแข่งขัน', 'matches-table', 'clipboard-check'],
-    'news-form': ['ข่าวประชาสัมพันธ์', 'news-table', 'newspaper'],
-    'user-form': ['ผู้ดูแลระบบ', 'users-table', 'shield-check'],
+    'user-form': ['สมาชิก', 'users-table', 'shield-check'],
+    'invite-form': ['คำเชิญทีมงาน', 'invites-table', 'mail-plus'],
   },
   labels: {
     team: 'ทีม', individual: 'บุคคล', open: 'ทั่วไป', male: 'ชาย', female: 'หญิง', mixed: 'ผสม',
@@ -21,7 +20,7 @@ const workspace = {
     postponed: 'เลื่อนการแข่งขัน', published: 'เผยแพร่แล้ว', archived: 'เก็บเข้าคลัง',
     todo: 'ต้องทำ', doing: 'กำลังทำ', blocked: 'ติดปัญหา', done: 'เสร็จแล้ว',
     low: 'ต่ำ', normal: 'ปกติ', high: 'สูง', urgent: 'เร่งด่วน',
-    general: 'ทั่วไป', content: 'ข่าวสาร', report: 'รายงาน', system: 'ระบบ', competition: 'การแข่งขัน',
+    general: 'ทั่วไป', content: 'ข่าวสาร', system: 'ระบบ', competition: 'การแข่งขัน',
     knockout: 'แพ้คัดออก', round_robin: 'พบกันหมด', group: 'แบ่งกลุ่ม', group_knockout: 'แบ่งกลุ่มและแพ้คัดออก',
   },
   tables: new Map(),
@@ -58,7 +57,7 @@ function initWorkspace() {
   const navigationIcons = {
     public: 'house', 'public-sports': 'trophy', 'public-athletes': 'users', 'public-schedule': 'calendar-days',
     'public-results': 'medal', 'public-standings': 'list-ordered', 'public-bracket': 'git-merge', 'public-news': 'newspaper', dashboard: 'layout-dashboard', sports: 'trophy',
-    students: 'graduation-cap', teams: 'users', matches: 'calendar-days', news: 'newspaper', users: 'shield-check', reports: 'chart-no-axes-combined',
+    students: 'graduation-cap', teams: 'users', matches: 'calendar-days', official: 'monitor-play', news: 'newspaper', users: 'shield-check',
   };
   $$('.tab').forEach(button => {
     button.innerHTML = `${icon(navigationIcons[button.dataset.viewButton])}<span>${button.textContent}</span>`;
@@ -110,15 +109,14 @@ function initWorkspace() {
       section.prepend(head);
     }
     if (id !== 'tournament-sport-setting-form') {
-      const createLabel = id === 'result-form' ? 'บันทึกผล' : `เพิ่ม${label}`;
+      const createLabel = id === 'invite-form' ? 'สร้างคำเชิญ' : `เพิ่ม${label}`;
       const createButton = command(
         createLabel,
-        id === 'result-form' ? glyph : 'plus',
+        'plus',
         () => id === 'student-form' ? openScopedStudentEditor() : openEditor(id),
-        id === 'result-form' ? '' : 'primary'
+        'primary'
       );
       if (id === 'student-form') createButton.dataset.studentScopeAction = 'create';
-      if (id === 'result-form') createButton.classList.add('result-only');
       if (['tournament-form', 'sport-rule-form'].includes(id)) createButton.classList.add('tournament-only');
       if (['team-form', 'member-form', 'match-form'].includes(id)) createButton.classList.add('schedule-only');
       if (id === 'student-form') createButton.classList.add('athlete-only');
@@ -144,46 +142,33 @@ function initWorkspace() {
   });
 
   const competitionGrid = $('#view-matches .grid');
-  const tournamentSection = $('#tournaments-table')?.closest('.data-section');
-  const sportRuleSection = $('#sport-rules-table')?.closest('.data-section');
-  const studentSection = $('#students-table')?.closest('.data-section');
-  const teamSection = $('#teams-table')?.closest('.data-section');
-  const memberSection = $('#members-table')?.closest('.data-section');
-  const matchSection = $('#matches-table')?.closest('.data-section');
-  const matchCenterSection = $('#match-center-panel');
-  const standingsSection = $('#standings-table')?.closest('.data-section');
-  if (competitionGrid && tournamentSection && sportRuleSection && studentSection && teamSection && memberSection && matchSection) {
-    tournamentSection.dataset.workflowStep = '1';
-    sportRuleSection.dataset.workflowStep = '3';
-    studentSection.dataset.workflowStep = '5';
-    teamSection.dataset.workflowStep = '6';
-    memberSection.dataset.workflowStep = '7';
-    matchSection.dataset.workflowStep = '9 10';
-    if (matchCenterSection) matchCenterSection.dataset.workflowStep = '10';
-    if (standingsSection) standingsSection.dataset.workflowStep = '10';
-    const orderedSections = [
-      tournamentSection,
-      $('#workflow-sports-section'),
-      sportRuleSection,
-      $('#workflow-departments-section'),
-      studentSection,
-      teamSection,
-      memberSection,
-      $('#workflow-readiness-section'),
-      $('#fixture-generator'),
-      matchSection,
-      matchCenterSection,
-      standingsSection,
-      $('#workflow-publish-section'),
-    ].filter(Boolean);
-    competitionGrid.append(...orderedSections);
-    const teamTab = $('.tab[data-view-button="teams"]');
-    if (teamTab) teamTab.hidden = true;
-    const studentTab = $('.tab[data-view-button="students"]');
-    if (studentTab) studentTab.hidden = true;
-  }
+  const panels = [
+    ['#workflow-sports-section', 'sports', '2'],
+    ['#workflow-departments-section', 'sports', '4'],
+    ['#students-table', 'athletes', '5'],
+    ['#teams-table', 'teams', '6'],
+    ['#members-table', 'teams', '7'],
+    ['#workflow-readiness-section', 'overview', '8'],
+    ['#fixture-generator', 'schedule', '9'],
+    ['#matches-table', 'schedule results', '9 10'],
+    ['#standings-table', 'results', '10'],
+    ['#match-assignment-panel', 'schedule', '9'],
+  ];
+  panels.forEach(([selector, sections, legacySteps]) => {
+    const element = $(selector);
+    const panel = element?.matches('.table-wrap') ? element.closest('.data-section') : element;
+    if (!panel || !competitionGrid) return;
+    panel.dataset.tournamentPanel = sections;
+    panel.dataset.workflowStep = legacySteps;
+    competitionGrid.append(panel);
+  });
+  const teamTab = $('.tab[data-view-button="teams"]');
+  if (teamTab) teamTab.hidden = true;
+  const studentTab = $('.tab[data-view-button="students"]');
+  if (studentTab) studentTab.hidden = true;
 
   $$('.app-panel').forEach(panel => {
+    if (panel.id === 'view-matches') return;
     if ($(':scope > .section-head', panel)) return;
     const name = panel.id.replace('view-', '');
     const tab = $(`.tab[data-view-button="${name}"]`);
@@ -229,7 +214,7 @@ function updateShortcuts() {
   const host = $('#dashboard-shortcuts');
   host.replaceChildren();
   $$('.admin-link:not([hidden])').filter(tab => tab.dataset.viewButton !== 'dashboard').forEach(tab => {
-    host.append(command(tab.textContent, { sports: 'trophy', students: 'graduation-cap', teams: 'users', matches: 'calendar-days', news: 'newspaper', users: 'shield-check', reports: 'chart-no-axes-combined' }[tab.dataset.viewButton], () => showView(tab.dataset.viewButton)));
+    host.append(command(tab.textContent, { sports: 'trophy', students: 'graduation-cap', teams: 'users', matches: 'calendar-days', official: 'monitor-play', news: 'newspaper', users: 'shield-check' }[tab.dataset.viewButton], () => showView(tab.dataset.viewButton)));
   });
   refreshIcons(host);
 }
@@ -250,6 +235,9 @@ function resetEditor(form) {
 }
 
 function openEditor(id, row = null) {
+  if (id === 'news-form') return openNewsEditor(row);
+  if (id === 'tournament-form' && !row?.id) return openTournamentCreate();
+  if (id === 'tournament-form') restoreTournamentEditor();
   const form = document.getElementById(id);
   resetEditor(form);
   if (id === 'match-form') {
@@ -268,21 +256,25 @@ function openEditor(id, row = null) {
     else if (id === 'tournament-form' && key === 'status') field.value = ({ registration: 'data_entry', closed: 'ready' }[value] || value || 'draft');
     else field.value = value ?? '';
   });
+  if (id === 'sport-form') {
+    const mode = form.elements.scoring_type;
+    mode.disabled = false;
+    document.getElementById('sport-scoring-help').textContent = row?.id
+      ? 'เมื่อเปลี่ยนรูปแบบ ระบบจะสร้างชุดกติกาเวอร์ชันใหม่ให้อัตโนมัติ แมตช์เดิมยังใช้กติกาเดิม ส่วนแมตช์ใหม่จะใช้รูปแบบใหม่นี้'
+      : 'รูปแบบที่เลือกจะสร้างเป็นกติกาหลัก และแมตช์ใหม่จะใช้แบบบันทึกตามกติกานี้';
+  }
   if (id === 'tournament-form' && typeof updateTournamentSportsSummary === 'function') updateTournamentSportsSummary();
   if (id === 'team-form' && typeof syncTeamSportOptions === 'function') {
     const sportId = row?.sport_id || '';
     syncTeamSportOptions();
     form.elements.sport_id.value = sportId;
   }
-  if (id === 'result-form' && typeof syncResultWinnerOptions === 'function') {
-    syncResultWinnerOptions();
-    form.elements.winner_team_id.value = row?.winner_team_id || '';
-  }
   if (id === 'organization-form' && typeof syncOrganizationFields === 'function') syncOrganizationFields();
   if (id === 'student-form' && typeof syncStudentPhotoPreview === 'function') syncStudentPhotoPreview(form.elements.photo_url?.value || '');
-  if (id === 'news-form' && typeof prepareNewsEditor === 'function') prepareNewsEditor(row);
+  if (['user-form', 'invite-form'].includes(id)) prepareAdminUserEditor(id, row);
   const label = workspace.forms[id][0];
-  $(`#${id}-title`).textContent = id === 'result-form' ? `บันทึก${label}` : `${row ? 'แก้ไข' : 'เพิ่ม'}${label}`;
+  $(`#${id}-title`).textContent = `${row ? 'แก้ไข' : 'เพิ่ม'}${label}`;
+  if (id === 'invite-form') $(`#${id}-title`).textContent = 'สร้างคำเชิญทีมงาน';
   form.dataset.snapshot = JSON.stringify(formData(form));
   form.closest('dialog').showModal();
   refreshIcons(form.closest('dialog'));
@@ -434,107 +426,4 @@ function renderDataTable(selector, columns, rows) {
     refreshIcons(host);
   }
   draw();
-}
-
-function openNews(row, newsRows = []) {
-  if (!row?.id) return;
-  const url = new URL(window.location.href);
-  url.search = '';
-  url.searchParams.set('view', 'public-news-detail');
-  url.searchParams.set('id', row.id);
-  window.history.pushState({ view: 'public-news-detail', id: String(row.id) }, '', url);
-  showView('public-news-detail');
-}
-
-function renderArticlePage(target, row, newsRows = []) {
-  const related = newsRows.filter(item => String(item.id) !== String(row.id)).slice(0, 3);
-  const lead = String(row.excerpt || '').trim();
-  const body = String(row.body || row.excerpt || '').trim();
-  target.innerHTML = `
-    <header class="article-reader-bar">
-      <div class="article-reader-brand"><span>SPORT TOURNAMENT</span><strong>ข่าวกีฬา</strong></div>
-      <span class="article-reader-section">${escapeHtml(row.news_type_label || 'ข่าวสาร')}</span>
-      <div class="article-reader-actions">
-        <button type="button" class="btn ghost article-copy-link">${icon('link')}<span>คัดลอกลิงก์</span></button>
-        <button type="button" class="btn icon-button article-close" aria-label="กลับหน้าข่าว" title="กลับหน้าข่าว">${icon('x')}</button>
-      </div>
-    </header>
-    <article class="article-reader">
-      <button type="button" class="article-back">${icon('arrow-left')}<span>กลับหน้าข่าวทั้งหมด</span></button>
-      <header class="article-heading">
-        <span class="article-kicker">${escapeHtml(row.news_type_label || 'ข่าวประชาสัมพันธ์')}</span>
-        <h1 id="article-title">${escapeHtml(row.title || '')}</h1>
-        ${lead && lead !== body ? `<p class="article-lead">${escapeHtml(lead)}</p>` : ''}
-        <div class="article-publish-meta">
-          <span>เผยแพร่โดย ฝ่ายประชาสัมพันธ์กีฬา</span>
-          <time>${escapeHtml(formatArticleDate(row.published_at || row.created_at || ''))}</time>
-        </div>
-      </header>
-      ${row.cover_image_url ? `<figure class="article-hero"><img src="${escapeAttr(row.cover_image_url)}" alt="ภาพประกอบ ${escapeAttr(row.title || '')}" onerror="this.closest('figure').remove()"><figcaption>ภาพประกอบข่าวประชาสัมพันธ์การแข่งขัน</figcaption></figure>` : ''}
-      <div class="article-content-layout">
-        <aside class="article-context" aria-label="ข้อมูลข่าว">
-          <span>หมวดข่าว</span><strong>${escapeHtml(row.news_type_label || 'ข่าวสาร')}</strong>
-          ${row.department_name ? `<span>หน่วยงาน</span><strong>${escapeHtml(row.department_name)}</strong>` : ''}
-        </aside>
-        <div class="article-body">${formatArticleBody(body)}</div>
-        ${related.length ? `<aside class="article-related" aria-label="ข่าวที่เกี่ยวข้อง"><h2>ข่าวที่เกี่ยวข้อง</h2>${related.map(item => `
-          <button type="button" class="article-related-card" data-related-news="${escapeAttr(item.id)}">
-            <span>${escapeHtml(item.news_type_label || 'ข่าวสาร')}</span>
-            <strong>${escapeHtml(item.title || '')}</strong>
-            <small>${escapeHtml(formatArticleDate(item.published_at || item.created_at || ''))}</small>
-          </button>`).join('')}</aside>` : ''}
-      </div>
-      <footer class="article-footer-actions">
-        ${row.source_url ? `<a class="btn primary article-source-link" href="${escapeAttr(row.source_url)}" target="_blank" rel="noopener noreferrer">${icon('external-link')}<span>เปิดเว็บไซต์ที่เกี่ยวข้อง</span></a>` : ''}
-        <button type="button" class="btn article-copy-link">${icon('link')}<span>คัดลอกลิงก์ข่าว</span></button>
-      </footer>
-    </article>`;
-  const back = () => {
-    const url = new URL(window.location.href);
-    url.search = '';
-    url.searchParams.set('view', 'public-news');
-    window.history.pushState({ view: 'public-news' }, '', url);
-    showView('public-news');
-  };
-  $$('.article-back, .article-close', target).forEach(button => button.addEventListener('click', back));
-  $$('.article-copy-link', target).forEach(button => button.addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText(window.location.href);
-      toast('คัดลอกลิงก์ข่าวแล้ว');
-    } catch (error) {
-      toast('ไม่สามารถคัดลอกลิงก์ได้ กรุณาคัดลอกจากแถบที่อยู่', true);
-    }
-  }));
-  $$('.article-related-card', target).forEach(card => card.addEventListener('click', () => {
-    const next = newsRows.find(item => String(item.id) === String(card.dataset.relatedNews));
-    if (!next) return;
-    openNews(next, newsRows);
-  }));
-  refreshIcons(target);
-}
-
-function renderArticleNotFound(target) {
-  target.innerHTML = `<div class="article-empty">${icon('newspaper')}<h1>ไม่พบข่าวที่ต้องการ</h1><p>ข่าวนี้อาจถูกย้าย ยกเลิกเผยแพร่ หรือลิงก์ไม่ถูกต้อง</p><button type="button" class="btn primary">กลับหน้าข่าวทั้งหมด</button></div>`;
-  $('button', target).addEventListener('click', () => {
-    const url = new URL(window.location.href);
-    url.search = '';
-    url.searchParams.set('view', 'public-news');
-    window.history.replaceState({ view: 'public-news' }, '', url);
-    showView('public-news');
-  });
-  refreshIcons(target);
-}
-
-function formatArticleBody(value) {
-  const paragraphs = String(value || '').split(/\n\s*\n/).map(part => part.trim()).filter(Boolean);
-  return paragraphs.length
-    ? paragraphs.map(paragraph => `<p>${escapeHtml(paragraph).replace(/\n/g, '<br>')}</p>`).join('')
-    : '<p>ยังไม่มีรายละเอียดข่าว</p>';
-}
-
-function formatArticleDate(value) {
-  if (!value) return 'ยังไม่ระบุเวลาเผยแพร่';
-  const date = new Date(String(value).replace(' ', 'T'));
-  if (Number.isNaN(date.getTime())) return String(value);
-  return new Intl.DateTimeFormat('th-TH', { dateStyle: 'long', timeStyle: 'short' }).format(date);
 }

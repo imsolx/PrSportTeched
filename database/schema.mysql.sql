@@ -3,12 +3,11 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT,
   note TEXT
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
 CREATE TABLE IF NOT EXISTS users (
   id INT PRIMARY KEY,
   email VARCHAR(190) NOT NULL UNIQUE,
   name VARCHAR(190) NOT NULL,
-  role VARCHAR(50) NOT NULL DEFAULT 'registration_officer',
+  role VARCHAR(50) NOT NULL DEFAULT 'admin',
   department_code VARCHAR(20),
   sport_ids TEXT,
   password_hash VARCHAR(255),
@@ -18,13 +17,12 @@ CREATE TABLE IF NOT EXISTS users (
   created_at VARCHAR(30),
   updated_at VARCHAR(30)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
 CREATE TABLE IF NOT EXISTS user_invites (
   id INT PRIMARY KEY,
   token_hash VARCHAR(128) NOT NULL UNIQUE,
   email VARCHAR(190) NOT NULL,
   name VARCHAR(190),
-  role VARCHAR(50) NOT NULL DEFAULT 'registration_officer',
+  role VARCHAR(50) NOT NULL DEFAULT 'admin',
   department_code VARCHAR(20),
   sport_ids TEXT,
   invited_by VARCHAR(190),
@@ -36,7 +34,6 @@ CREATE TABLE IF NOT EXISTS user_invites (
   created_at VARCHAR(30),
   CONSTRAINT fk_user_invites_user FOREIGN KEY (accepted_user_id) REFERENCES users(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
 CREATE TABLE IF NOT EXISTS departments (
   id INT PRIMARY KEY,
   code VARCHAR(20) NOT NULL UNIQUE,
@@ -173,6 +170,7 @@ CREATE TABLE IF NOT EXISTS matches (
   clock_seconds INT NOT NULL DEFAULT 0,
   clock_status VARCHAR(30) NOT NULL DEFAULT 'stopped',
   overtime_count INT NOT NULL DEFAULT 0,
+  action_revision INT NOT NULL DEFAULT 0,
   confirmed_by VARCHAR(190),
   confirmed_at VARCHAR(30),
   created_at VARCHAR(30),
@@ -200,6 +198,62 @@ CREATE TABLE IF NOT EXISTS standings (
   UNIQUE (tournament_id, team_id),
   CONSTRAINT fk_standings_tournament FOREIGN KEY (tournament_id) REFERENCES tournaments(id),
   CONSTRAINT fk_standings_team FOREIGN KEY (team_id) REFERENCES teams(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS match_official_assignments (
+  match_id INT NOT NULL,
+  user_id INT NOT NULL,
+  team_id INT,
+  assigned_by VARCHAR(190),
+  created_at VARCHAR(30),
+  PRIMARY KEY (match_id, user_id),
+  CONSTRAINT fk_match_official_match FOREIGN KEY (match_id) REFERENCES matches(id) ON DELETE CASCADE,
+  CONSTRAINT fk_match_official_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_match_official_team FOREIGN KEY (team_id) REFERENCES teams(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS match_entries (
+  id INT PRIMARY KEY,
+  match_id INT NOT NULL,
+  entry_type VARCHAR(30) NOT NULL,
+  student_id INT,
+  team_id INT,
+  department_code VARCHAR(40),
+  display_name VARCHAR(190) NOT NULL,
+  lane_number INT,
+  source_type VARCHAR(30) NOT NULL DEFAULT 'manual',
+  members_json MEDIUMTEXT NOT NULL,
+  result_status VARCHAR(30) NOT NULL DEFAULT 'PENDING',
+  provisional_time_ms INT,
+  verified_time_ms INT,
+  rank_number INT,
+  points INT NOT NULL DEFAULT 0,
+  revision_number INT NOT NULL DEFAULT 0,
+  created_at VARCHAR(30),
+  updated_at VARCHAR(30),
+  CONSTRAINT fk_match_entries_match FOREIGN KEY (match_id) REFERENCES matches(id) ON DELETE CASCADE,
+  CONSTRAINT fk_match_entries_student FOREIGN KEY (student_id) REFERENCES students(id),
+  CONSTRAINT fk_match_entries_team FOREIGN KEY (team_id) REFERENCES teams(id),
+  CONSTRAINT fk_match_entries_department FOREIGN KEY (department_code) REFERENCES departments(code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS match_entry_revisions (
+  id INT PRIMARY KEY,
+  entry_id INT NOT NULL,
+  old_value MEDIUMTEXT NOT NULL,
+  new_value MEDIUMTEXT NOT NULL,
+  reason TEXT NOT NULL,
+  updated_by VARCHAR(190),
+  created_at VARCHAR(30),
+  CONSTRAINT fk_match_entry_revisions_entry FOREIGN KEY (entry_id) REFERENCES match_entries(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS match_event_requests (
+  request_id VARCHAR(100) PRIMARY KEY,
+  match_id INT NOT NULL,
+  event_id INT NOT NULL,
+  created_at VARCHAR(30),
+  CONSTRAINT fk_match_request_match FOREIGN KEY (match_id) REFERENCES matches(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS news (
@@ -251,6 +305,8 @@ CREATE TABLE IF NOT EXISTS sport_rule_versions (
   category VARCHAR(100),
   player_type VARCHAR(50) NOT NULL DEFAULT 'team',
   team_size INT NOT NULL DEFAULT 1,
+  scoring_type VARCHAR(40) NOT NULL DEFAULT 'SCORE',
+  scoring_config MEDIUMTEXT NOT NULL,
   scoring_system MEDIUMTEXT NOT NULL,
   match_format MEDIUMTEXT NOT NULL,
   period_format MEDIUMTEXT NOT NULL,
@@ -319,6 +375,34 @@ CREATE TABLE IF NOT EXISTS match_events (
   CONSTRAINT fk_match_events_student FOREIGN KEY (student_id) REFERENCES students(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS match_results (
+  id INT PRIMARY KEY,
+  match_id INT NOT NULL,
+  scoring_type VARCHAR(40) NOT NULL,
+  config_snapshot MEDIUMTEXT NOT NULL,
+  result_data MEDIUMTEXT NOT NULL,
+  summary_json MEDIUMTEXT NOT NULL,
+  revision_number INT NOT NULL DEFAULT 1,
+  created_by VARCHAR(190),
+  updated_by VARCHAR(190),
+  created_at VARCHAR(30),
+  updated_at VARCHAR(30),
+  UNIQUE KEY uq_match_results_match (match_id),
+  CONSTRAINT fk_match_results_match FOREIGN KEY (match_id) REFERENCES matches(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS match_result_revisions (
+  id INT PRIMARY KEY,
+  match_result_id INT NOT NULL,
+  revision_number INT NOT NULL,
+  old_result MEDIUMTEXT NOT NULL,
+  new_result MEDIUMTEXT NOT NULL,
+  reason TEXT,
+  updated_by VARCHAR(190),
+  created_at VARCHAR(30),
+  CONSTRAINT fk_match_result_revisions_result FOREIGN KEY (match_result_id) REFERENCES match_results(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS news_links (
   news_id INT NOT NULL,
   entity_type VARCHAR(50) NOT NULL,
@@ -335,93 +419,4 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   entity_id VARCHAR(100),
   detail_json MEDIUMTEXT,
   created_at VARCHAR(30)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS report_categories (
-  id INT PRIMARY KEY,
-  code VARCHAR(80) NOT NULL UNIQUE,
-  name VARCHAR(190) NOT NULL,
-  description TEXT,
-  icon VARCHAR(80),
-  display_order INT NOT NULL DEFAULT 0,
-  is_active TINYINT(1) NOT NULL DEFAULT 1
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS report_templates (
-  id INT PRIMARY KEY,
-  category_id INT NOT NULL,
-  code VARCHAR(100) NOT NULL UNIQUE,
-  name VARCHAR(190) NOT NULL,
-  description TEXT,
-  sections_json TEXT,
-  display_order INT NOT NULL DEFAULT 0,
-  is_active TINYINT(1) NOT NULL DEFAULT 1,
-  CONSTRAINT fk_report_templates_category FOREIGN KEY (category_id) REFERENCES report_categories(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS reports (
-  id INT PRIMARY KEY,
-  title VARCHAR(255) NOT NULL,
-  category_id INT NOT NULL,
-  template_id INT NOT NULL,
-  tournament_id INT,
-  academic_year VARCHAR(20),
-  fiscal_year VARCHAR(20),
-  semester VARCHAR(30),
-  start_date VARCHAR(30),
-  end_date VARCHAR(30),
-  department VARCHAR(190),
-  responsible_person VARCHAR(190),
-  prepared_by VARCHAR(190),
-  report_date VARCHAR(30),
-  status VARCHAR(50) NOT NULL DEFAULT 'draft',
-  general_json MEDIUMTEXT,
-  performance_json MEDIUMTEXT,
-  outcomes_json MEDIUMTEXT,
-  problems_json MEDIUMTEXT,
-  executive_summary MEDIUMTEXT,
-  created_by VARCHAR(190),
-  published_at VARCHAR(30),
-  created_at VARCHAR(30),
-  updated_at VARCHAR(30),
-  CONSTRAINT fk_reports_category FOREIGN KEY (category_id) REFERENCES report_categories(id),
-  CONSTRAINT fk_reports_template FOREIGN KEY (template_id) REFERENCES report_templates(id),
-  CONSTRAINT fk_reports_tournament FOREIGN KEY (tournament_id) REFERENCES tournaments(id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS report_kpis (
-  id INT PRIMARY KEY,
-  report_id INT NOT NULL,
-  name VARCHAR(255) NOT NULL,
-  unit VARCHAR(50),
-  target_value DECIMAL(14,2),
-  actual_value DECIMAL(14,2),
-  calculation_type VARCHAR(30) NOT NULL DEFAULT 'percentage',
-  achievement DECIMAL(8,2),
-  status VARCHAR(50),
-  display_order INT NOT NULL DEFAULT 0,
-  CONSTRAINT fk_report_kpis_report FOREIGN KEY (report_id) REFERENCES reports(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS report_budgets (
-  id INT PRIMARY KEY,
-  report_id INT NOT NULL UNIQUE,
-  allocated DECIMAL(14,2) NOT NULL DEFAULT 0,
-  actual DECIMAL(14,2) NOT NULL DEFAULT 0,
-  remaining DECIMAL(14,2) NOT NULL DEFAULT 0,
-  usage_percentage DECIMAL(8,2) NOT NULL DEFAULT 0,
-  note TEXT,
-  CONSTRAINT fk_report_budgets_report FOREIGN KEY (report_id) REFERENCES reports(id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
-CREATE TABLE IF NOT EXISTS report_attachments (
-  id INT PRIMARY KEY,
-  report_id INT NOT NULL,
-  file_name VARCHAR(255) NOT NULL,
-  file_url TEXT NOT NULL,
-  file_type VARCHAR(100),
-  file_size INT NOT NULL DEFAULT 0,
-  note TEXT,
-  created_at VARCHAR(30),
-  CONSTRAINT fk_report_attachments_report FOREIGN KEY (report_id) REFERENCES reports(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
