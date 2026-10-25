@@ -6,6 +6,7 @@
 @import "tailwindcss/utilities.css" layer(utilities) prefix(tw) source(none);
 
 @source "../../public/**/*.php";
+@source "../../app/views/**/*.php";
 @source "../../public/assets/**/*.js";
 
 @theme inline {
