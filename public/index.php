@@ -198,7 +198,6 @@ $csrf = Auth::csrfToken();
     <section class="view app-panel" id="view-dashboard" hidden>
       <div class="section-head">
         <h2>แดชบอร์ด</h2>
-        <button class="btn small" id="dashboard-ai-button" type="button">สร้างสรุปด้วย AI</button>
       </div>
       <div class="metric-grid">
         <div class="metric"><span>กีฬาเปิดใช้</span><strong id="d-active-sports">0</strong></div>
@@ -207,7 +206,6 @@ $csrf = Auth::csrfToken();
         <div class="metric"><span>แมตช์จบแล้ว</span><strong id="d-completed">0</strong></div>
       </div>
       <div class="dashboard-shortcuts" id="dashboard-shortcuts"></div>
-      <section class="dashboard-summary"><h3>สรุปภาพรวม</h3><div class="ai-output" id="dashboard-ai-output">ยังไม่มีข้อมูลสรุป</div></section>
       <section class="data-section"><h3>กิจกรรมล่าสุด</h3><div class="table-wrap" id="audit-table"></div></section>
     </section>
 
@@ -409,26 +407,7 @@ $csrf = Auth::csrfToken();
       <?php require __DIR__ . '/components/tournaments/TournamentForm.php'; ?>
     </section>
 
-    <section class="view official-console" id="view-official" hidden>
-      <header class="official-console-head">
-        <div><h1>เลือกหน้าบันทึกการแข่งขัน</h1><p>ระบบจะเปิดหน้าเฉพาะตามรูปแบบกติกาที่ผูกกับแมตช์</p></div>
-        <div class="official-head-actions"><button class="btn" id="official-back-button" type="button" aria-label="กลับหน้าจัดการ"><i data-lucide="layout-dashboard"></i><span>กลับหน้าจัดการ</span></button><div class="official-user-mark"><i data-lucide="clipboard-pen-line"></i><span>ผู้บันทึกผลการแข่งขัน</span></div></div>
-      </header>
-      <div class="official-console-layout">
-        <aside class="official-match-rail">
-          <div class="official-panel-heading"><h2>แมตช์ที่รับผิดชอบ</h2><button class="icon-button" id="official-refresh" type="button" aria-label="โหลดรายการแมตช์ใหม่"><i data-lucide="refresh-cw"></i></button></div>
-          <h3>กำลังแข่งขัน</h3>
-          <div class="official-match-list" id="official-live-matches"></div>
-          <h3>กำลังจะเริ่ม</h3>
-          <div class="official-match-list" id="official-upcoming-matches"></div>
-          <h3>จบแล้วล่าสุด</h3>
-          <div class="official-match-list" id="official-completed-matches"></div>
-        </aside>
-        <div class="official-workbench" id="official-center-host">
-          <div class="official-routing-empty"><i data-lucide="mouse-pointer-click"></i><h2>เลือกแมตช์จากรายการ</h2><p>แมตช์ SCORE และ SET จะเปิดหน้าบันทึกแยกทันที ส่วนรูปแบบอื่นจะแจ้งว่ายังอยู่ระหว่างจัดทำ</p></div>
-        </div>
-      </div>
-    </section>
+<?php require __DIR__ . '/pages/scoring/MatchSelector.php'; ?>
 
 <?php require __DIR__ . '/pages/news/NewsManagement.php'; ?>
 <?php require __DIR__ . '/pages/news/NewsEditor.php'; ?>
@@ -529,6 +508,8 @@ $csrf = Auth::csrfToken();
   <script>
     window.PRSPORT = {
       apiUrl: <?= json_encode(app_url('api.php'), JSON_UNESCAPED_SLASHES) ?>,
+      assetBase: <?= json_encode(app_url('public/assets'), JSON_UNESCAPED_SLASHES) ?>,
+      scoringBaseUrl: <?= json_encode(app_url('public/scoring'), JSON_UNESCAPED_SLASHES) ?>,
       csrf: <?= json_encode($csrf) ?>,
       user: <?= json_encode($user, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>
     };
@@ -546,6 +527,8 @@ $csrf = Auth::csrfToken();
   <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/modules/news/news-drafts.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
   <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/modules/news/news-honor.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
   <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/modules/news/news-composer.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
+  <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/scoring/scoring-config.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
+  <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/scoring/match-selector.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
   <script src="<?= htmlspecialchars(versioned_asset_url('public/assets/app.js'), ENT_QUOTES, 'UTF-8') ?>"></script>
 </body>
 </html>

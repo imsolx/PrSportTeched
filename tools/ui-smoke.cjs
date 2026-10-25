@@ -234,8 +234,8 @@ async function main() {
     await expect(page.locator('#view-dashboard')).toBeVisible();
     await expect(page.locator('.admin-link[data-view-button="users"]')).toBeVisible();
     await capture({ path: path.join(artifacts, 'dashboard-desktop.png'), fullPage: true });
-    await page.locator('#dashboard-ai-button').click();
-    await expect(page.locator('#dashboard-ai-output .ai-meta')).toContainText('local-summary');
+    await expect(page.locator('#dashboard-ai-button')).toHaveCount(0);
+    await expect(page.locator('#dashboard-ai-output')).toHaveCount(0);
 
     const go = async name => {
       if (await page.locator('#menu-toggle').isVisible()) await page.locator('#menu-toggle').click();

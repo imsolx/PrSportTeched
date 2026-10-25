@@ -335,7 +335,6 @@ tbody tr:hover { background: #fafbfe; }
 .metric > span { color: var(--muted); @apply tw:text-[13px]; }
 .metric strong { color: var(--primary); @apply tw:text-[32px]; line-height: 1.6; }
 .dashboard-shortcuts { @apply tw:flex; @apply tw:gap-[10px]; @apply tw:flex-wrap; @apply tw:pb-[28px]; border-bottom: 1px solid var(--line); @apply tw:mb-[28px]; }
-.dashboard-summary { @apply tw:mb-[28px]; }
 .ai-output { border: 1px solid var(--line); background: #fff; @apply tw:text-[13px]; line-height: 1.8; overflow-wrap: anywhere; box-shadow: none; }
 .ai-output ul { margin: 8px 0 14px 20px; @apply tw:p-[0px]; @apply tw:whitespace-normal; }
 .ai-output h4 { margin: 14px 0 6px; color: var(--navy); font-size: .95rem; }

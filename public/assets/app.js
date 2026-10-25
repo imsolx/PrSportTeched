@@ -111,11 +111,11 @@ const sportIconAsset = (value, sportName = '') => {
   const validKeys = new Set(sportIconOptions.map(([id]) => id));
   const searchText = `${sportName} ${value}`.trim().toLocaleLowerCase('th');
   const inferredKey = sportIconNameRules.find(([, terms]) => terms.some(term => searchText.includes(term)))?.[0];
-  if (inferredKey) return `public/assets/sports/${sportIconFile(inferredKey)}`;
-  if (validKeys.has(directKey) && directKey !== 'general') return `public/assets/sports/${sportIconFile(directKey)}`;
+  if (inferredKey) return `${window.PRSPORT.assetBase}/sports/${sportIconFile(inferredKey)}`;
+  if (validKeys.has(directKey) && directKey !== 'general') return `${window.PRSPORT.assetBase}/sports/${sportIconFile(directKey)}`;
 
   const key = inferredKey || (validKeys.has(directKey) ? directKey : 'general');
-  return `public/assets/sports/${sportIconFile(key)}`;
+  return `${window.PRSPORT.assetBase}/sports/${sportIconFile(key)}`;
 };
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -126,6 +126,8 @@ document.addEventListener('DOMContentLoaded', () => {
   bindAuth();
   bindRoleSwitcher();
   bindForms();
+  bindScoringConfig();
+  bindScoringSelector();
   bindAdminUsers();
   bindTournamentWorkspace();
   restorePresentationRole();
@@ -273,8 +275,6 @@ async function setPresentationRole(role) {
 }
 
 function bindForms() {
-  $('#scoring-type')?.addEventListener('change', () => syncScoringConfigFields(true));
-  syncScoringConfigFields();
   bindSaveForm('#sport-form', 'sports.save', async () => {
     await loadSportsAdmin();
     await loadPublicHome();
@@ -382,10 +382,6 @@ function bindForms() {
     await loadPublicAthletes();
   });
 
-  bindTaskButton('#dashboard-ai-button', async () => {
-    const result = await request('ai.dashboard');
-    renderAiOutput('#dashboard-ai-output', result);
-  });
   bindNewsAi();
   bindNewsCoverInputs();
   $('#home-tournament-filter').addEventListener('change', event => filterPublicHome(event.target.value));
@@ -416,8 +412,6 @@ function bindForms() {
   $('#team-form [name="tournament_id"]').addEventListener('change', syncTeamSportOptions);
   $('#organization-type').addEventListener('change', syncOrganizationFields);
   $('#standings-tournament-filter').addEventListener('change', event => loadStandings(event.target.value));
-  $('#official-refresh').addEventListener('click', () => loadOfficialCenter(true));
-  $('#official-back-button').addEventListener('click', () => showView(app.allowedViews.includes('dashboard') ? 'dashboard' : 'official'));
   $('#tournament-sport-type').addEventListener('change', syncTournamentSportOptions);
   $('#tournament-sports-toggle').addEventListener('click', () => {
     const options = $('#tournament-sports-options');
@@ -1366,66 +1360,6 @@ function syncMatchTeamOptions() {
   setOptions($('#match-team2-select'), rows, row => row.id, row => row.name, 'ไม่ระบุ');
 }
 
-function syncScoringConfigFields(applyDefaults = false) {
-  const type = $('#scoring-type')?.value || 'SCORE';
-  syncLegacyModeOptions($('#scoring-type'));
-  $$('[data-config-for]').forEach(field => {
-    field.hidden = !field.dataset.configFor.split(/\s+/).includes(type);
-  });
-  if (applyDefaults) {
-    const form = $('#sport-rule-form');
-    form.elements.include_in_standings.checked = ['SCORE', 'ROUND', 'PERIOD_SCORE', 'SET', 'END_SCORE', 'DECISION', 'COMBAT', 'MAP'].includes(type);
-    form.elements.scoring_mode.value = ({ SCORE: 'points', ROUND: 'points', PERIOD_SCORE: 'points', SET: 'sets', END_SCORE: 'points', TIME: 'time', RACE_POSITION: 'rank' })[type] || 'points';
-    form.elements.win_by.value = ['TIME', 'RACE_POSITION', 'STROKE', 'LOWEST'].includes(type) ? 'lowest' : type === 'SET' ? 'sets' : 'highest';
-    if (['ROUND', 'END_SCORE'].includes(type)) form.elements.target_score.value = type === 'ROUND' ? '0' : '13';
-  }
-}
-
-function syncLegacyModeOptions(select) {
-  const group = select?.querySelector('[data-legacy-modes]');
-  if (!group) return;
-  const legacy = ['PERIOD_SCORE', 'END_SCORE', 'POINT_RANKING', 'COMBAT', 'RACE_POSITION', 'STROKE', 'MAP'];
-  group.hidden = !legacy.includes(select.value);
-}
-
-function detectScoringType(match, rule) {
-  const configured = String(rule?.scoring_type || '').toUpperCase();
-  if (configured && (configured !== 'SCORE' || (rule?.created_by && rule.created_by !== 'migration'))) return configured;
-  const text = `${match?.sport_icon || ''} ${match?.sport_name || ''}`.toLocaleLowerCase('th');
-  const families = [
-    ['HEIGHT', ['กระโดดสูง', 'ค้ำถ่อ', 'high jump', 'pole vault']],
-    ['DISTANCE', ['กระโดดไกล', 'เขย่ง', 'ทุ่มน้ำหนัก', 'ขว้างจักร', 'ขว้างหอก', 'long jump', 'shot put', 'discus', 'javelin']],
-    ['POINT_RANKING', ['ยิมนาสติก', 'เชียร์ลีดดิ้ง', 'เต้น', 'gymnastic', 'cheer', 'dance']],
-    ['COMBAT', ['มวย', 'เทควันโด', 'คาราเต้', 'boxing', 'muay', 'taekwondo', 'karate']],
-    ['STROKE', ['กอล์ฟ', 'golf']],
-    ['MAP', ['esport', 'e-sport', 'อีสปอร์ต', 'กีฬาอิเล็กทรอนิกส์']],
-    ['END_SCORE', ['petanque', 'pétanque', 'เปตอง']],
-    ['PERIOD_SCORE', ['basketball', 'บาสเกตบอล', 'american football']],
-    ['SET', ['volleyball', 'badminton', 'table-tennis', 'table tennis', 'tennis', 'sepak', 'วอลเลย์บอล', 'แบดมินตัน', 'เทเบิลเทนนิส', 'ปิงปอง', 'เทนนิส', 'ตะกร้อ']],
-    ['RACE_POSITION', ['running', 'swimming', 'cycling', 'วิ่ง', 'ว่ายน้ำ', 'จักรยาน', 'ผลัด', 'race']],
-  ];
-  return families.find(([, terms]) => terms.some(term => text.includes(term)))?.[0] || configured || 'SCORE';
-}
-
-function defaultScoringConfig(type) {
-  return ({
-    SCORE: { allow_draw: true, include_in_standings: true },
-    PERIOD_SCORE: { periods: 4, allow_overtime: true, include_in_standings: true },
-    SET: { best_of: 3, points_to_win_set: 21, win_by: 2, max_points: 30, include_in_standings: true },
-    ROUND: { target_score: 0, include_in_standings: true },
-    END_SCORE: { target_score: 13, include_in_standings: true },
-    JUDGED: { aggregation: 'SUM', include_in_standings: false },
-    TARGET: { aggregation: 'SUM', include_in_standings: false },
-    COUNT: { win_by: 'HIGHEST', include_in_standings: false },
-    LOWEST: { include_in_standings: false },
-    DECISION: { include_in_standings: true },
-    COMBINED: { win_by: 'HIGHEST', include_in_standings: false },
-    POINT_RANKING: { aggregation: 'SUM', include_in_standings: false },
-    MAP: { best_of: 3, include_in_standings: true },
-    COMBAT: { include_in_standings: true },
-  })[type] || { include_in_standings: false };
-}
-
 async function loadDashboard() {
   await loadAdminRefs();
   const data = await request('dashboard.summary');
@@ -1682,80 +1616,6 @@ async function setTeamStatus(id, status) {
   toast('เปลี่ยนสถานะทีมแล้ว');
 }
 
-
-async function openMatchCenter(matchId) {
-  if (!matchId) return;
-  const match = app.matches.find(row => String(row.id) === String(matchId));
-  const rule = match ? app.sportRules.find(item => String(item.id) === String(match.rule_version_id)) : null;
-  const dedicatedUrl = match ? dedicatedRecordingPageUrl(match, rule) : '';
-  if (dedicatedUrl) {
-    window.location.assign(dedicatedUrl);
-    return;
-  }
-  const scoringType = detectScoringType(match, rule);
-  toast(`หน้าบันทึก ${scoringType} ยังอยู่ระหว่างจัดทำ ระบบเดิมถูกยกเลิกแล้ว`, true);
-}
-
-function mountOfficialMatchCenter(active) {
-  document.body.classList.toggle('official-console-active', Boolean(active));
-}
-
-async function loadOfficialCenter(force = false) {
-  mountOfficialMatchCenter(true);
-  if (force || !app.matches.length) await loadAdminRefs();
-  if (!app.sportRules.length) {
-    app.sportRules = await request('sportRules.list', { sport_id: '' }, { silent: true }).catch(() => []);
-  }
-  renderOfficialMatchLists('');
-}
-
-function renderOfficialMatchLists(selectedId = '') {
-  const groups = {
-    '#official-live-matches': app.matches.filter(row => row.status === 'live'),
-    '#official-upcoming-matches': app.matches.filter(row => row.status === 'scheduled'),
-    '#official-completed-matches': app.matches.filter(row => row.status === 'completed').slice(0, 5),
-  };
-  Object.entries(groups).forEach(([selector, rows]) => {
-    const host = $(selector);
-    host.innerHTML = rows.length ? rows.map(row => {
-      const rule = app.sportRules.find(item => String(item.id) === String(row.rule_version_id));
-      const isRace = ['TIME', 'RACE_POSITION'].includes(detectScoringType(row, rule));
-      const displayParts = row.status === 'completed' && row.result_summary?.display_score
-        ? String(row.result_summary.display_score).split(/\s+-\s+/) : [];
-      const scoringType = detectScoringType(row, rule);
-      const dedicatedUrl = dedicatedRecordingPageUrl(row, rule);
-      return `
-      <div class="official-match-entry">
-      <button class="official-match-item ${String(row.id) === String(selectedId) ? 'selected' : ''}" type="button" data-official-match="${escapeAttr(row.id)}">
-        <span class="official-match-topline"><span class="official-match-state status-${matchStatusClass(row.status)}">${escapeHtml(row.status_label || workspace.labels[row.status] || row.status)}</span><b class="official-match-mode">${escapeHtml(scoringType)} · กติกา v${escapeHtml(rule?.version_number || '-')}</b></span>
-        ${row.team1_id && row.team2_id && !isRace
-          ? `<strong>${escapeHtml(row.team1_name || '-')} <b>${escapeHtml(displayParts[0] ?? row.team1_score ?? '-')}</b></strong><strong>${escapeHtml(row.team2_name || '-')} <b>${escapeHtml(displayParts[1] ?? row.team2_score ?? '-')}</b></strong>`
-          : `<strong>${escapeHtml(row.sport_name || 'การแข่งขันจับเวลา')}</strong><span>${escapeHtml(row.round_name || '')}</span>`}
-        <small>${escapeHtml([row.match_code || `Match #${row.id}`, row.round_name, row.scheduled_at, row.venue].filter(Boolean).join(' · '))}</small>
-      </button>
-      ${dedicatedUrl ? `<a class="official-score-page-link" href="${escapeAttr(dedicatedUrl)}">เปิดหน้าบันทึก ${escapeHtml(scoringType)} <span aria-hidden="true">→</span></a>` : ''}
-      </div>
-    `; }).join('') : '<p class="official-list-empty">ไม่มีรายการ</p>';
-  });
-  $$('[data-official-match]').forEach(button => button.addEventListener('click', async () => {
-    const id = button.dataset.officialMatch;
-    await openMatchCenter(String(id));
-  }));
-}
-
-function dedicatedRecordingPageUrl(match, rule) {
-  const pageByType = { SCORE: 'score.php', SET: 'set.php' };
-  const page = pageByType[detectScoringType(match, rule)];
-  return page ? scoreRecordingPageUrl(match.id, page) : '';
-}
-
-function scoreRecordingPageUrl(matchId, page = 'score.php') {
-  const apiUrl = new URL(app.apiUrl, window.location.href);
-  apiUrl.pathname = apiUrl.pathname.replace(/\/api\.php$/, `/public/scoring/${page}`);
-  apiUrl.search = '';
-  apiUrl.searchParams.set('match_id', String(matchId));
-  return apiUrl.toString();
-}
 
 function formatRaceTime(milliseconds) {
   return (Number(milliseconds) / 1000).toFixed(3);
