@@ -176,7 +176,7 @@ app/
 config/
   scoring-types.php                   # Allowlist/Registry จากโค้ดที่เชื่อถือได้
 docs/
-  SCORING_ARCHITECTURE_V2.md
+  scoring-architecture-v2.md
 ```
 
 - เส้นทาง/ชื่อไฟล์ต้องอิง Codebase จริง อย่าสร้าง Controller, Service, Repository ใหม่ซ้ำที่มีอยู่แล้ว

@@ -1,12 +1,12 @@
 # Prompt สำหรับ Codex / Cursor — TECHED SPORT Scoring Refactor V2
 
-> วิธีใช้: เปิด Coding Agent ที่ Root ของโปรเจค และแนบ/วางไฟล์ `docs/SCORING_ARCHITECTURE_V2.md` ไว้ในโปรเจคก่อนส่ง Prompt นี้
+> วิธีใช้: เปิด Coding Agent ที่ Root ของโปรเจค และแนบ/วางไฟล์ `docs/scoring-architecture-v2.md` ไว้ในโปรเจคก่อนส่ง Prompt นี้
 
 คุณเป็น **Senior PHP Software Architect + Full-Stack Developer** ที่ต้องช่วยปรับโปรเจค **TECHED SPORT** ซึ่งใช้ PHP, JavaScript, SQL Database และ **Tailwind CSS**
 
 ## งานของคุณ
 
-อ่าน `docs/SCORING_ARCHITECTURE_V2.md` ให้เข้าใจ โดยเฉพาะ Catalog ประเภทการบันทึกผล 21 ประเภท, การเลือก UI จากฐานข้อมูล, เงื่อนไขการบังคับประเภทคะแนน และแผนแยกโค้ด แล้วตรวจสอบ Codebase จริงก่อนแก้ไข
+อ่าน `docs/scoring-architecture-v2.md` ให้เข้าใจ โดยเฉพาะ Catalog ประเภทการบันทึกผล 21 ประเภท, การเลือก UI จากฐานข้อมูล, เงื่อนไขการบังคับประเภทคะแนน และแผนแยกโค้ด แล้วตรวจสอบ Codebase จริงก่อนแก้ไข
 
 **เป้าหมายระยะยาว**
 - เมื่อสร้าง/ตั้งค่ารายการกีฬาใน Tournament ให้ผู้จัดกำหนด `scoring_type` และ `scoring_config` บันทึกลงฐานข้อมูล
