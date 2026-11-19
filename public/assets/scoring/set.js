@@ -40,8 +40,7 @@
   }
 
   function renderMatchOptions() {
-    const ruleTypes = new Map(state.rules.map(rule => [String(rule.id), String(rule.scoring_type || '').toUpperCase()]));
-    const rows = state.matches.filter(match => ruleTypes.get(String(match.rule_version_id)) === 'SET');
+    const rows = state.matches.filter(match => !match.scoring_error && match.resolved_scoring_type === 'SET');
     const groups = [
       ['live', 'กำลังแข่งขัน'],
       ['scheduled', 'รอแข่งขัน'],
@@ -74,7 +73,7 @@
     }
     try {
       const data = await request('matches.center', { match_id: matchId });
-      const type = String(data.resolved_scoring_type || data.rule?.scoring_type || '').toUpperCase();
+      const type = String(data.resolved_scoring_type || '');
       if (type !== 'SET') throw new Error(`แมตช์นี้ใช้รูปแบบ ${type || 'อื่น'} ไม่ใช่ SET`);
       state.center = data;
       const source = data.recording_result?.result_data_value ||

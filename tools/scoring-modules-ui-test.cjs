@@ -59,6 +59,7 @@ if (pathinfo($file, PATHINFO_EXTENSION) === 'php') {
     const errors = [];
     const fontFailures = new Set();
     const calls = [];
+    let expectedCenterValidation = false;
     page.on('pageerror', error => errors.push(error.message));
     page.on('console', message => {
       if (message.type() === 'error' && !message.text().startsWith('Failed to load resource:')) errors.push(message.text());
@@ -68,11 +69,15 @@ if (pathinfo($file, PATHINFO_EXTENSION) === 'php') {
       if (action) calls.push(action);
     });
     page.on('response', response => {
+      if (expectedCenterValidation && response.status() === 422 && new URL(response.url()).searchParams.get('action') === 'matches.center') return;
       if (response.status() >= 400) errors.push(`${response.status()} ${response.url()}`);
     });
     page.on('requestfailed', request => {
       const url = new URL(request.url());
-      if (['fonts.googleapis.com', 'fonts.gstatic.com'].includes(url.hostname)) {
+      // Optional third-party presentation resources can be denied by the runner.
+      // Local sport icons, recorder assets and API failures still fail this test.
+      if (['fonts.googleapis.com', 'fonts.gstatic.com'].includes(url.hostname)
+          || (url.hostname === 'images.unsplash.com' && request.failure()?.errorText === 'net::ERR_NETWORK_ACCESS_DENIED')) {
         fontFailures.add(`${request.failure()?.errorText} ${url.hostname}`);
       } else errors.push(`${request.failure()?.errorText} ${url}`);
     });
@@ -135,6 +140,13 @@ if (pathinfo($file, PATHINFO_EXTENSION) === 'php') {
         expect(await listeners(`[data-official-match="${fixture.TIME.id}"]`, 'click')).toBe(1);
         await page.locator(`[data-official-match="${fixture.TIME.id}"]`).click();
         await expect(page.locator('#toast')).toContainText('หน้าบันทึก TIME ยังอยู่ระหว่างจัดทำ');
+        // Forged/stale client metadata must not choose the recorder page.
+        await page.evaluate(id => {
+          const row = app.matches.find(match => String(match.id) === String(id));
+          row.resolved_scoring_type = 'SET';
+          row.recorder_page = 'set.php';
+          renderOfficialMatchLists();
+        }, fixture.SCORE.id);
         for (const type of ['SCORE', 'SET']) {
           const mode = type.toLowerCase();
           await page.locator(`[data-official-match="${fixture[type].id}"]`).click();
@@ -158,6 +170,30 @@ if (pathinfo($file, PATHINFO_EXTENSION) === 'php') {
         }
       }
     }
+
+    // Deliberately corrupt only this test database to verify the unavailable UI.
+    async function setTestRuleType(type) {
+      const code = '$pdo = new PDO(getenv("PRSPORT_DB_DSN")); $q = $pdo->prepare("UPDATE sport_rule_versions SET scoring_type = ? WHERE id = ?"); $q->execute(' + JSON.stringify([type, Number(fixture.TIME.rule_version_id)]) + ');';
+      await new Promise((resolve, reject) => {
+        const child = spawn(process.env.PHP_BINARY || 'C:/xampp/php/php.exe', ['-r', code], { env: { ...process.env, PRSPORT_DB_DSN: `sqlite:${db}` }, windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
+        let stderr = '';
+        child.stderr.on('data', data => stderr += data);
+        child.on('error', reject);
+        child.on('exit', exit => exit === 0 ? resolve() : reject(new Error(stderr)));
+      });
+    }
+    await setTestRuleType('UNKNOWN');
+    await page.goto(`${base}/?view=official`);
+    const badCard = page.locator(`[data-official-match="${fixture.TIME.id}"]`);
+    await expect(badCard).toContainText('ไม่พร้อมบันทึก');
+    await expect(badCard).toContainText('ไม่รองรับประเภทคะแนน');
+    await expect(badCard.locator('..').locator('a.official-score-page-link')).toHaveCount(0);
+    expectedCenterValidation = true;
+    await badCard.click();
+    await expect(page.locator('#toast')).toContainText('ไม่รองรับประเภทคะแนน');
+    expectedCenterValidation = false;
+    await page.screenshot({ path: path.join(artifacts, 'unsupported-config-desktop.png'), fullPage: true });
+    await setTestRuleType('TIME');
 
     await page.goto(`${base}/public/scoring/score.php?match_id=${fixture.SCORE.id}`);
     let before = count('matches.clock');
@@ -246,7 +282,7 @@ if (pathinfo($file, PATHINFO_EXTENSION) === 'php') {
     expect(errors).toEqual([]);
     expect(phpErrors).toEqual([]);
     console.log('PASS root/subdirectory + normal/public entries, images, local font, selector refresh, legacy mode blocking, SCORE/SET selection/reload, validation, start/finish, one API write and one listener per action.');
-    console.log('Google Fonts network observations:', [...fontFailures]);
+    console.log('External resource network observations:', [...fontFailures]);
     console.log(`Screenshots: ${artifacts}`);
   } finally {
     if (browser) await browser.close();

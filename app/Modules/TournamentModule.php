@@ -25,35 +25,39 @@ trait TournamentModule
 
     public static function createTournament(array $payload): array
     {
-        Auth::canManageTournaments();
-        $sportIds = self::tournamentSportIds($payload);
-        $record = self::validateTournamentPayload($payload);
-        $record['id'] = self::nextId('tournaments');
-        $record['published_at'] = '';
-        $record['created_by'] = Auth::currentUser()['email'] ?? '';
-        $record['created_at'] = Database::now();
-        $record['updated_at'] = Database::now();
-        $row = self::insertRow('tournaments', $record);
-        self::replaceTournamentSports((string) $row['id'], $sportIds);
-        $row = self::enrichedTournamentRows([$row])[0];
-        self::audit('create', 'tournament', (string) $row['id'], $row);
-        return $row;
+        return MatchScoringGuard::transaction(static function () use ($payload): array {
+            Auth::canManageTournaments();
+            $sportIds = self::tournamentSportIds($payload);
+            $record = self::validateTournamentPayload($payload);
+            $record['id'] = self::nextId('tournaments');
+            $record['published_at'] = '';
+            $record['created_by'] = Auth::currentUser()['email'] ?? '';
+            $record['created_at'] = Database::now();
+            $record['updated_at'] = Database::now();
+            $row = self::insertRow('tournaments', $record);
+            self::replaceTournamentSports((string) $row['id'], $sportIds);
+            $row = self::enrichedTournamentRows([$row])[0];
+            self::audit('create', 'tournament', (string) $row['id'], $row);
+            return $row;
+        });
     }
 
     public static function updateTournament(string $id, array $payload): array
     {
-        Auth::canManageTournaments();
-        $current = self::findById('tournaments', $id);
-        $next = array_replace($current, $payload);
-        $sportIds = array_key_exists('sport_ids', $payload)
-            ? self::tournamentSportIds($next)
-            : self::tournamentSportIds(['sport_id' => $payload['sport_id'] ?? $current['sport_id']]);
-        $next['sport_ids'] = $sportIds;
-        $row = self::updateRow('tournaments', $id, self::validateTournamentPayload($next));
-        self::replaceTournamentSports($id, $sportIds);
-        $row = self::enrichedTournamentRows([$row])[0];
-        self::audit('update', 'tournament', $id, $row);
-        return $row;
+        return MatchScoringGuard::transaction(static function () use ($id, $payload): array {
+            Auth::canManageTournaments();
+            $current = self::findById('tournaments', $id);
+            $next = array_replace($current, $payload);
+            $sportIds = array_key_exists('sport_ids', $payload)
+                ? self::tournamentSportIds($next)
+                : self::tournamentSportIds(['sport_id' => $payload['sport_id'] ?? $current['sport_id']]);
+            $next['sport_ids'] = $sportIds;
+            $row = self::updateRow('tournaments', $id, self::validateTournamentPayload($next));
+            self::replaceTournamentSports($id, $sportIds);
+            $row = self::enrichedTournamentRows([$row])[0];
+            self::audit('update', 'tournament', $id, $row);
+            return $row;
+        });
     }
 
     public static function deleteTournament(string $id): array
@@ -190,6 +194,7 @@ trait TournamentModule
         if ((string) $rule['sport_id'] !== $sportId) {
             throw new InvalidArgumentException('ชุดกติกาต้องเป็นของกีฬาที่เลือก');
         }
+        ScoringResolver::resolve(['rule_version_id' => $ruleId, 'sport_id' => $sportId], $rule);
         $status = (string) ($payload['status'] ?? 'pending');
         if (!in_array($status, ['pending', 'ready', 'locked'], true)) {
             throw new InvalidArgumentException('สถานะการตั้งค่ากีฬาไม่ถูกต้อง');
@@ -209,6 +214,14 @@ trait TournamentModule
         $pdo = Database::pdo();
         $pdo->beginTransaction();
         try {
+            $rule = MatchScoringGuard::lockRule($ruleId);
+            ScoringResolver::resolve(['rule_version_id' => $ruleId, 'sport_id' => $sportId], $rule);
+            $suffix = Database::pdo()->getAttribute(PDO::ATTR_DRIVER_NAME) === 'sqlite' ? '' : ' FOR UPDATE';
+            $existing = self::fetchOne('SELECT * FROM tournament_sport_settings WHERE tournament_id = :tournament_id AND sport_id = :sport_id' . $suffix,
+                [':tournament_id' => $tournamentId, ':sport_id' => $sportId]);
+            if (($existing['status'] ?? '') === 'locked' && ($status !== 'locked' || (string) $existing['rule_version_id'] !== $ruleId)) {
+                throw new RuntimeException('การตั้งค่ากีฬาถูกล็อกแล้ว ไม่สามารถเปลี่ยนกติกาหรือปลดล็อกผ่านคำสั่งนี้ได้');
+            }
             if ($existing) {
                 $row = self::updateRow('tournament_sport_settings', (string) $existing['id'], $record);
             } else {
@@ -230,19 +243,23 @@ trait TournamentModule
                    AND NOT EXISTS (SELECT 1 FROM match_results WHERE match_results.match_id = matches.id)",
                 [':tournament_id' => $tournamentId, ':sport_id' => $sportId, ':rule_version_id' => $ruleId]
             );
+            $migratedIds = [];
             foreach ($candidates as $candidate) {
                 $matchId = (string) $candidate['id'];
+                $current = MatchScoringGuard::lock($matchId);
+                if (!MatchScoringGuard::untouched($current)) continue;
                 self::deleteRowsWhere('match_periods', 'match_id = :id', [':id' => $matchId]);
                 self::updateRow('matches', $matchId, ['rule_version_id' => $ruleId]);
                 self::ensureMatchPeriods($matchId, self::decodeSportRule($rule));
+                $migratedIds[] = $matchId;
             }
-            $migrated = count($candidates);
+            $migrated = count($migratedIds);
             self::audit('configure_sport', 'tournament', $tournamentId, [
                 'sport_id' => $sportId,
                 'previous_rule_version_id' => $existing['rule_version_id'] ?? null,
                 'rule_version_id' => $ruleId,
                 'status' => $status,
-                'migrated_scheduled_match_ids' => array_column($candidates, 'id'),
+                'migrated_scheduled_match_ids' => $migratedIds,
             ]);
             $pdo->commit();
             return array_replace($row, ['migrated_matches' => $migrated]);
@@ -517,24 +534,28 @@ trait TournamentModule
 
     private static function ensureTournamentSportSetting(string $tournamentId, string $sportId): array
     {
-        $existing = self::fetchOne(
-            'SELECT * FROM tournament_sport_settings WHERE tournament_id = :tournament_id AND sport_id = :sport_id',
-            [':tournament_id' => $tournamentId, ':sport_id' => $sportId]
-        );
-        if ($existing) {
-            return $existing;
-        }
-        $rule = self::activeSportRule($sportId);
-        return self::insertRow('tournament_sport_settings', [
-            'id' => self::nextId('tournament_sport_settings'),
-            'tournament_id' => $tournamentId,
-            'sport_id' => $sportId,
-            'rule_version_id' => $rule['id'],
-            'status' => 'pending',
-            'notes' => '',
-            'created_at' => Database::now(),
-            'updated_at' => Database::now(),
-        ]);
+        return MatchScoringGuard::transaction(static function () use ($tournamentId, $sportId): array {
+            $existing = self::fetchOne(
+                'SELECT * FROM tournament_sport_settings WHERE tournament_id = :tournament_id AND sport_id = :sport_id',
+                [':tournament_id' => $tournamentId, ':sport_id' => $sportId]
+            );
+            if ($existing) {
+                return $existing;
+            }
+            $rule = self::activeSportRule($sportId);
+            $rule = MatchScoringGuard::lockRule((string) $rule['id']);
+            ScoringResolver::resolve(['rule_version_id' => $rule['id'], 'sport_id' => $sportId], $rule);
+            return self::insertRow('tournament_sport_settings', [
+                'id' => self::nextId('tournament_sport_settings'),
+                'tournament_id' => $tournamentId,
+                'sport_id' => $sportId,
+                'rule_version_id' => $rule['id'],
+                'status' => 'pending',
+                'notes' => '',
+                'created_at' => Database::now(),
+                'updated_at' => Database::now(),
+            ]);
+        });
     }
 
     private static function tournamentSportRule(string $tournamentId, string $sportId): array

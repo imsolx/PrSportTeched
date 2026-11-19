@@ -133,13 +133,18 @@ $overrideMatch = AppService::handle('matches.save', [
     'team2_id' => $team2['id'],
     'round_name' => 'ทดสอบสลับมุมมอง',
 ]);
-$override = AppService::handle('matches.result', [
+$overrideRejected = false;
+try {
+    AppService::handle('matches.result', [
     'match_id' => $overrideMatch['id'],
     'scoring_type' => 'RACE_POSITION',
     'result_data' => json_encode(['home' => ['value' => 1, 'status' => 'VALID'], 'away' => ['value' => 2, 'status' => 'VALID']]),
-]);
-if (($override['result']['scoring_type'] ?? '') !== 'RACE_POSITION' || (int) $override['winner_team_id'] !== (int) $team1['id']) {
-    throw new RuntimeException('Per-result scoring type switch was not persisted');
+    ]);
+} catch (InvalidArgumentException $error) {
+    $overrideRejected = str_contains($error->getMessage(), 'ไม่ตรง');
+}
+if (!$overrideRejected || (int) Database::pdo()->query('SELECT COUNT(*) FROM match_results WHERE match_id = ' . (int) $overrideMatch['id'])->fetchColumn() !== 0) {
+    throw new RuntimeException('Per-result scoring type switch must be rejected without writing a result');
 }
 
 echo "PASS multi-sport persistence and revision audit\n";

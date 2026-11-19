@@ -45,8 +45,7 @@
   }
 
   function renderMatchOptions() {
-    const ruleTypes = new Map(state.rules.map(rule => [String(rule.id), String(rule.scoring_type || '').toUpperCase()]));
-    const scoreMatches = state.matches.filter(match => ruleTypes.get(String(match.rule_version_id)) === 'SCORE');
+    const scoreMatches = state.matches.filter(match => !match.scoring_error && match.resolved_scoring_type === 'SCORE');
     const select = $('#score-match-select');
     const groups = [['live', 'กำลังแข่งขัน'], ['scheduled', 'รอแข่งขัน'], ['completed', 'จบแล้ว']];
     select.innerHTML = `<option value="">เลือกแมตช์ SCORE</option>${groups.map(([status, label]) => {
@@ -77,7 +76,7 @@
     }
     try {
       const data = await request('matches.center', { match_id: matchId });
-      const type = String(data.resolved_scoring_type || data.rule?.scoring_type || '').toUpperCase();
+      const type = String(data.resolved_scoring_type || '');
       if (type !== 'SCORE') throw new Error(`แมตช์นี้ใช้รูปแบบ ${type || 'อื่น'} ไม่ใช่ SCORE`);
       state.center = data;
       $('#score-empty').hidden = true;

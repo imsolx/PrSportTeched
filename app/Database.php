@@ -459,33 +459,8 @@ final class Database
                 ':updated_at' => $now,
             ]);
         }
-        $upgradeRule = $pdo->prepare('UPDATE sport_rule_versions SET scoring_type = :scoring_type, scoring_config = :scoring_config WHERE id = :id');
-        foreach ($pdo->query('SELECT id, scoring_type, scoring_config, scoring_system, match_format, overtime_rules, tie_break_rules, period_format FROM sport_rule_versions')->fetchAll() as $legacyRule) {
-            if (trim((string) ($legacyRule['scoring_config'] ?? '')) !== '') {
-                continue;
-            }
-            $scoring = json_decode((string) ($legacyRule['scoring_system'] ?? '{}'), true) ?: [];
-            $match = json_decode((string) ($legacyRule['match_format'] ?? '{}'), true) ?: [];
-            $overtime = json_decode((string) ($legacyRule['overtime_rules'] ?? '{}'), true) ?: [];
-            $tieBreak = json_decode((string) ($legacyRule['tie_break_rules'] ?? '{}'), true) ?: [];
-            $period = json_decode((string) ($legacyRule['period_format'] ?? '{}'), true) ?: [];
-            $type = ['sets' => 'SET', 'time' => 'TIME', 'rank' => 'RACE_POSITION'][(string) ($scoring['mode'] ?? 'points')] ?? 'SCORE';
-            $config = match ($type) {
-                'SCORE' => [
-                    'allow_draw' => !empty($match['allow_draw']),
-                    'allow_extra_time' => !empty($overtime['enabled']),
-                    'allow_penalty' => (string) ($tieBreak['method'] ?? 'draw') === 'penalty',
-                    'include_in_standings' => true,
-                ],
-                'SET' => ['best_of' => max(1, (int) ($period['count'] ?? 3)), 'include_in_standings' => true],
-                default => ['include_in_standings' => false],
-            };
-            $upgradeRule->execute([
-                ':scoring_type' => $type,
-                ':scoring_config' => json_encode($config, JSON_UNESCAPED_UNICODE),
-                ':id' => $legacyRule['id'],
-            ]);
-        }
-        $pdo->exec('UPDATE matches SET rule_version_id = (SELECT id FROM sport_rule_versions WHERE sport_rule_versions.sport_id = matches.sport_id AND is_active = 1 ORDER BY version_number DESC LIMIT 1) WHERE rule_version_id IS NULL');
+        // Missing legacy configs and match rule references require reviewed backfill.
+        // Never repair them from an active sport rule during normal requests.
+
     }
 }

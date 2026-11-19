@@ -16,9 +16,16 @@ const bindScoringSelector = (() => {
 
 async function openMatchCenter(matchId) {
   if (!matchId) return;
-  const match = app.matches.find(row => String(row.id) === String(matchId));
-  const rule = match ? app.sportRules.find(item => String(item.id) === String(match.rule_version_id)) : null;
-  const dedicatedUrl = match ? dedicatedRecordingPageUrl(match, rule) : '';
+  let center;
+  try {
+    center = await request('matches.center', { match_id: String(matchId) });
+  } catch (error) {
+    toast(error.message, true);
+    return;
+  }
+  const match = { ...center.match, resolved_scoring_type: center.resolved_scoring_type, recorder_page: center.recorder_page };
+  const rule = center.rule;
+  const dedicatedUrl = dedicatedRecordingPageUrl(match, rule);
   if (dedicatedUrl) {
     window.location.assign(dedicatedUrl);
     return;
@@ -53,7 +60,7 @@ function renderOfficialMatchLists(selectedId = '') {
       const isRace = ['TIME', 'RACE_POSITION'].includes(detectScoringType(row, rule));
       const displayParts = row.status === 'completed' && row.result_summary?.display_score
         ? String(row.result_summary.display_score).split(/\s+-\s+/) : [];
-      const scoringType = detectScoringType(row, rule);
+      const scoringType = detectScoringType(row, rule) || 'ไม่พร้อมบันทึก';
       const dedicatedUrl = dedicatedRecordingPageUrl(row, rule);
       return `
       <div class="official-match-entry">
@@ -63,6 +70,7 @@ function renderOfficialMatchLists(selectedId = '') {
           ? `<strong>${escapeHtml(row.team1_name || '-')} <b>${escapeHtml(displayParts[0] ?? row.team1_score ?? '-')}</b></strong><strong>${escapeHtml(row.team2_name || '-')} <b>${escapeHtml(displayParts[1] ?? row.team2_score ?? '-')}</b></strong>`
           : `<strong>${escapeHtml(row.sport_name || 'การแข่งขันจับเวลา')}</strong><span>${escapeHtml(row.round_name || '')}</span>`}
         <small>${escapeHtml([row.match_code || `Match #${row.id}`, row.round_name, row.scheduled_at, row.venue].filter(Boolean).join(' · '))}</small>
+        ${row.scoring_error ? `<small>${escapeHtml(row.scoring_error)}</small>` : ''}
       </button>
       ${dedicatedUrl ? `<a class="official-score-page-link" href="${escapeAttr(dedicatedUrl)}">เปิดหน้าบันทึก ${escapeHtml(scoringType)} <span aria-hidden="true">→</span></a>` : ''}
       </div>
@@ -77,6 +85,7 @@ function renderOfficialMatchLists(selectedId = '') {
 function dedicatedRecordingPageUrl(match, rule) {
   const pageByType = { SCORE: 'score.php', SET: 'set.php' };
   const page = pageByType[detectScoringType(match, rule)];
+  if (!page || match?.scoring_error || page !== match?.recorder_page) return '';
   return page ? scoreRecordingPageUrl(match.id, page) : '';
 }
 

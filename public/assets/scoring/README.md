@@ -38,15 +38,18 @@ client, validation and DOM bindings inside an IIFE. They do not load `app.js` or
 the selector modules. Race result formatting in `app.js` belongs to public result
 presentation; it is not an active recording handler.
 
-## Server resolver prerequisite
+## Server resolver (Phase 5)
 
-Before production use of config-driven scoring, address these existing issues in
-a separate backend phase:
+`matches.list` adds `resolved_scoring_type`, `recorder_page` and `scoring_error`.
+The selector refreshes authority through `matches.center` before navigating;
+it does not route from a sport name, a client-edited type or a default SCORE value.
+Dedicated recorders filter their pickers using server-resolved types and reject
+wrong-type direct links. Existing action names and scoring payload fields remain.
 
-- `AppService::saveMatchResult()` can accept `scoring_type` from the request.
-- Client/server legacy type inference can guess from sport names or fall back to
-  `SCORE`. Preserve this compatibility behavior during JavaScript extraction;
-  replace it through a server-authoritative resolver with regression coverage.
+- Result writes resolve type/config on the server; a supplied conflicting type is
+  rejected. A supplied config cannot override stored rules or result snapshots.
+- Missing, unsupported or corrupt rules have no recorder page. One invalid row
+  remains visible as unavailable without breaking the entire match list.
 - Existing UI routes cover SCORE and SET only. Other engine types retain their
   current unsupported-page message; adding recorder pages is a separate phase.
 

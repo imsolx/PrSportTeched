@@ -34,23 +34,9 @@ function syncLegacyModeOptions(select) {
   group.hidden = !legacy.includes(select.value);
 }
 
+// Recording routes use server metadata; rule/name inference is never a routing fallback.
 function detectScoringType(match, rule) {
-  const configured = String(rule?.scoring_type || '').toUpperCase();
-  if (configured && (configured !== 'SCORE' || (rule?.created_by && rule.created_by !== 'migration'))) return configured;
-  const text = `${match?.sport_icon || ''} ${match?.sport_name || ''}`.toLocaleLowerCase('th');
-  const families = [
-    ['HEIGHT', ['กระโดดสูง', 'ค้ำถ่อ', 'high jump', 'pole vault']],
-    ['DISTANCE', ['กระโดดไกล', 'เขย่ง', 'ทุ่มน้ำหนัก', 'ขว้างจักร', 'ขว้างหอก', 'long jump', 'shot put', 'discus', 'javelin']],
-    ['POINT_RANKING', ['ยิมนาสติก', 'เชียร์ลีดดิ้ง', 'เต้น', 'gymnastic', 'cheer', 'dance']],
-    ['COMBAT', ['มวย', 'เทควันโด', 'คาราเต้', 'boxing', 'muay', 'taekwondo', 'karate']],
-    ['STROKE', ['กอล์ฟ', 'golf']],
-    ['MAP', ['esport', 'e-sport', 'อีสปอร์ต', 'กีฬาอิเล็กทรอนิกส์']],
-    ['END_SCORE', ['petanque', 'pétanque', 'เปตอง']],
-    ['PERIOD_SCORE', ['basketball', 'บาสเกตบอล', 'american football']],
-    ['SET', ['volleyball', 'badminton', 'table-tennis', 'table tennis', 'tennis', 'sepak', 'วอลเลย์บอล', 'แบดมินตัน', 'เทเบิลเทนนิส', 'ปิงปอง', 'เทนนิส', 'ตะกร้อ']],
-    ['RACE_POSITION', ['running', 'swimming', 'cycling', 'วิ่ง', 'ว่ายน้ำ', 'จักรยาน', 'ผลัด', 'race']],
-  ];
-  return families.find(([, terms]) => terms.some(term => text.includes(term)))?.[0] || configured || 'SCORE';
+  return String(match?.resolved_scoring_type || '');
 }
 
 function defaultScoringConfig(type) {
